@@ -52,6 +52,13 @@ class SparseCoder(nn.Module):
         self.encoder = nn.Linear(d_in, self.num_latents, device=device, dtype=dtype)
         self.encoder.bias.data.zero_()
 
+        if cfg.bilinear:
+            self.encoder2 = nn.Linear(
+                d_in, self.num_latents, device=device, dtype=dtype
+            )
+            self.encoder2.weight.data.zero_()
+            self.encoder2.bias.data.zero_()
+
         if decoder:
             # Transcoder initialization: use zeros
             if cfg.transcode:
@@ -181,9 +188,21 @@ class SparseCoder(nn.Module):
         if not self.cfg.transcode:
             x = x - self.b_dec
 
-        return fused_encoder(
+        result = fused_encoder(
             x, self.encoder.weight, self.encoder.bias, self.cfg.k, self.cfg.activation
         )
+
+        if self.cfg.bilinear:
+            preacts2 = self.encoder2(x) / self.cfg.k
+            preacts2 = torch.nn.functional.softplus(preacts2)
+            values2 = torch.gather(preacts2, dim=1, index=result.top_indices)
+            result = EncoderOutput(
+                result.top_acts * values2,
+                result.top_indices,
+                result.pre_acts * preacts2,
+            )
+
+        return result
 
     def decode(self, top_acts: Tensor, top_indices: Tensor) -> Tensor:
         assert self.W_dec is not None, "Decoder weight was not initialized."

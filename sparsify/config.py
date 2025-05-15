@@ -35,6 +35,9 @@ class SparseCoderConfig(Serializable):
     transcode: bool = False
     """Whether we want to predict the output of a module given its input."""
 
+    bilinear: bool = False
+    """Use two encoders, one for selecting top-k and one for enhancing it."""
+
 
 # Support different naming conventions for the same configuration
 SaeConfig = SparseCoderConfig
