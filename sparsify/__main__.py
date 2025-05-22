@@ -217,11 +217,9 @@ def run():
             trainer.load_state(f"checkpoints/{args.run_name}" or "checkpoints/unnamed")
         elif args.finetune:
             for name, sae in trainer.saes.items():
-                barrier()
                 sae.load_state(
                     f"{args.finetune}/{name}",
                 )
-                barrier()
 
         trainer.fit()
 

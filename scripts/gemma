@@ -4,7 +4,7 @@
 # export PATH=/usr/local/cuda-12.8/bin:$PATH
 
 # WANDB_ENTITY=eleutherai  \
-SPARSIFY_DISTRIBUTE_MODEL=0 uv run torchrun --nproc_per_node=gpu -m sparsify \
+uv run torchrun --master_port $RANDOM --nproc_per_node=gpu -m sparsify \
 google/gemma-2-2b EleutherAI/fineweb-edu-dedup-10b \
 --ctx_len 128 \
 --transcode=True \
@@ -12,6 +12,6 @@ google/gemma-2-2b EleutherAI/fineweb-edu-dedup-10b \
 --k=32 \
 --run_name gemma-2-2b/$1 ${@:2} \
 --skip_connection=True \
---tp=2 \
---layers 3 \
---activation groupmax
+--tp=3 \
+--activation groupmax \
+--coalesce_topk=concat --topk_coalesced=False --post_encoder_scale=True --normalize_io=True --k=16

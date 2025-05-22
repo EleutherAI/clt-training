@@ -175,7 +175,7 @@ class FusedEncoder(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             grad_input = decoder_impl(
                 indices,
-                grad_values.type_as(weight),
+                grad_values,
                 weight,
             )
 

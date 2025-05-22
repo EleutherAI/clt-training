@@ -627,10 +627,8 @@ class Trainer:
                         case other:
                             raise ValueError(f"Unknown loss function '{other}'")
             finally:
-                barrier()
                 for handle in handles:
                     handle.remove()
-                runner.reset()
 
             # Check if we need to actually do a training step
             step, substep = divmod(self.global_step + 1, self.cfg.grad_acc_steps)

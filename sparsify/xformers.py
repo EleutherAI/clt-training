@@ -3,7 +3,13 @@
 import torch
 import triton
 from torch import Tensor
+from torch.distributed.tensor import DTensor
 from triton import language as tl
+import os
+
+
+TRITON_DEBUG = os.environ.get("TRITON_DEBUG", "0") == "1"
+TRITON_DEBUG_CONSTEXPR = tl.constexpr(TRITON_DEBUG)
 
 
 @triton.jit
@@ -15,13 +21,21 @@ def embedding_bag_k(
     dim: tl.constexpr,
     dim_padded: tl.constexpr,
     bag_size: tl.constexpr,
+    N: tl.constexpr,
+    L: tl.constexpr,
 ):
     out_idx = tl.program_id(axis=0).to(tl.int64)
+    # assert out_idx < L, "Out index larger than L"
+    # assert out_idx >= 0, "Out index smaller than 0"
     out_value = tl.zeros([dim_padded], dtype=tl.float32)
     dim_mask = tl.arange(0, dim_padded) < dim
     for bag in range(0, bag_size):
         my_index = tl.load(indices_ptr + out_idx * bag_size + bag).to(tl.int64)
+        # if TRITON_DEBUG_CONSTEXPR and my_index >= N:
+            # tl.device_print("index", my_index, N)
         my_scaling = tl.load(per_sample_weights + out_idx * bag_size + bag)
+        # assert my_index < N, "Index larger than N"
+        # assert my_index >= 0, "Index smaller than 0"
         my_weight = tl.load(
             weight_ptr + tl.arange(0, dim_padded) + my_index * dim, mask=dim_mask
         )
@@ -31,14 +45,35 @@ def embedding_bag_k(
     )
 
 
+USE_EMB_BAG = os.environ.get("USE_EMB_BAG", "0") == "1"
+
+
 def embedding_bag_triton(
     indices: Tensor, weight: Tensor, per_sample_weights: Tensor
 ) -> Tensor:
+    assert indices.ndim == 2
+    assert not isinstance(indices, DTensor)
     trt_out = torch.empty(
         [indices.shape[0], weight.shape[1]], dtype=weight.dtype, device=weight.device
     )
+    indices = indices.contiguous().to(dtype=torch.int64)
+    per_sample_weights = per_sample_weights.contiguous().to(dtype=torch.float32)
     grid = (indices.shape[0],)
 
+    if TRITON_DEBUG:
+        assert indices.max() < weight.shape[0], "Index larger than N"
+        assert indices.min() >= 0, "Index smaller than 0"
+
+    # if USE_EMB_BAG:
+    #     print(weight[weight.shape[0] - 1])
+    #     print(weight[indices.max()])
+    #     return (weight[indices] * per_sample_weights[..., None]).sum(dim=1)
+    #     return torch.nn.functional.embedding_bag(
+    #         indices,
+    #         weight,
+    #         per_sample_weights=per_sample_weights,
+    #         mode="sum",
+    #     )
     embedding_bag_k[grid](
         trt_out,
         indices,
@@ -47,6 +82,8 @@ def embedding_bag_triton(
         dim=weight.shape[-1],
         dim_padded=triton.next_power_of_2(weight.shape[-1]),
         bag_size=indices.shape[1],
+        N=weight.shape[0],
+        L=indices.shape[0],
         num_warps=1,
         num_stages=1,
     )

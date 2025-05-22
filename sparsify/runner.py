@@ -11,7 +11,7 @@ from .sparse_coder import MidDecoder, SparseCoder
 class CrossLayerRunner(object):
     def __init__(self):
         self.outputs = {}
-        self.to_restore = []
+        self.to_restore = {}
 
     def encode(self, x: Tensor, sparse_coder: SparseCoder, **kwargs):
         out_mid = sparse_coder(
@@ -38,8 +38,6 @@ class CrossLayerRunner(object):
         output = 0
         to_delete = set()
         out, hookpoint = None, None
-        if detach_grad:
-            self.to_restore.clear()
         for i, (hookpoint, layer_mid) in enumerate(self.outputs.items()):
             if detach_grad:
                 layer_mid.detach()
@@ -54,7 +52,7 @@ class CrossLayerRunner(object):
             )
             candidate_values.append(layer_mid.current_latent_acts)
             if detach_grad:
-                self.to_restore.append((layer_mid, layer_mid.will_be_last))
+                self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
             if layer_mid.will_be_last:
                 to_delete.add(hookpoint)
             if not mid_out.sparse_coder.cfg.do_coalesce_topk:
@@ -171,9 +169,10 @@ class CrossLayerRunner(object):
         return self.decode(mid_out, y, module_name, detach_grad)
 
     def restore(self):
-        for restorable, was_last in self.to_restore:
+        for restorable, was_last in self.to_restore.values():
             if was_last:
                 restorable.restore(True)
+        self.to_restore.clear()
 
     def reset(self):
         self.outputs.clear()

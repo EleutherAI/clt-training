@@ -5,7 +5,7 @@ from typing import Any, Optional, Type, TypeVar, cast
 import torch
 from safetensors.torch import load_file, save_file
 from torch import Tensor, nn
-from torch.distributed.tensor import DTensor, Replicate, Shard, distribute_tensor
+from torch.distributed.tensor import DTensor, Replicate, Shard, Partial, distribute_tensor
 from torch.distributed.tensor.device_mesh import DeviceMesh
 from transformers import PreTrainedModel
 
@@ -300,7 +300,25 @@ def eager_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
 
 # Triton implementation of SAE decoder
 def triton_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
+    assert not isinstance(top_acts, DTensor)
+    assert not isinstance(W_dec, DTensor)
+    assert top_acts.ndim == 2
+    assert W_dec.ndim == 2
     return xformers_embedding_bag(top_indices, W_dec, top_acts)
+    # return TritonDecoder.apply(
+    #     top_indices,
+    #     top_acts,
+    #     W_dec.T,
+    # )
+    # indices = torch.arange(top_indices.numel(), device=top_indices.device)
+    # example_indices, feature_indices = indices // top_indices.shape[1], top_indices.flatten()
+    # return COODecoder.apply(
+    #     example_indices,
+    #     feature_indices,
+    #     top_acts.flatten(),
+    #     W_dec.T,
+    #     top_indices.shape[0],
+    # )
 
 
 def parallelize_decoder(decoder):
@@ -321,11 +339,23 @@ def parallelize_decoder(decoder):
             and isinstance(W_dec, DTensor)
         ):
             assert top_indices.device_mesh == top_acts.device_mesh == W_dec.device_mesh
+            mesh = top_indices.device_mesh
             assert top_indices.placements == top_acts.placements
             placement = {}
+            local_acts = top_acts.to_local()
+            local_indices = top_indices.to_local()
             for i, p in enumerate(W_dec.placements):
-                if isinstance(p, Shard) and p.dim == 1:
-                    placement[i] = Shard(1)
+                if isinstance(p, Shard):
+                    if p.dim == 1:
+                        placement[i] = Shard(1)
+                    else:
+                        features_per_rank = W_dec.to_local().shape[0]
+                        rank = mesh.get_local_rank(1)
+                        start_idx = rank * features_per_rank
+                        end_idx = start_idx + features_per_rank
+                        local_acts = local_acts * (start_idx <= local_indices) * (local_indices < end_idx)
+                        local_indices = (local_indices - start_idx) % features_per_rank
+                        placement[i] = Partial("sum")
             for i, p in enumerate(top_indices.placements):
                 if isinstance(p, Shard) and p.dim == 0:
                     placement[i] = Shard(0)
@@ -333,7 +363,7 @@ def parallelize_decoder(decoder):
                 placement.get(i, Replicate()) for i in range(len(W_dec.placements))
             ]
             result_local = decoder(
-                top_indices.to_local(), top_acts.to_local(), W_dec.to_local()
+                local_indices, local_acts, W_dec.to_local()
             )
             result = DTensor.from_local(
                 result_local, top_indices.device_mesh, placement
@@ -354,6 +384,7 @@ def parallelize_decoder(decoder):
 
 try:
     from .xformers import xformers_embedding_bag
+    from .kernels import COODecoder, TritonDecoder
 except ImportError:
     decoder_impl = eager_decode
     print("Triton not installed, using eager implementation of sparse decoder.")
