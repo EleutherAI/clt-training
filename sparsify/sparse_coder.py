@@ -463,8 +463,8 @@ class SparseCoder(nn.Module):
         if self.cfg.post_encoder_scale:
             if self.multi_target:
                 self.post_enc_scales = nn.ParameterList()
-                for _ in range(cfg.n_targets):
-                    self.post_enc_scales.append(make_post_enc(is_zeros=False))
+                for i in range(cfg.n_targets):
+                    self.post_enc_scales.append(make_post_enc(is_zeros=i > 0))
             else:
                 self.post_enc_scale = make_post_enc(is_zeros=False)
 
@@ -564,6 +564,12 @@ class SparseCoder(nn.Module):
         if hasattr(self, "post_encs") and "post_encs" not in state_dict:
             for i, post_enc in enumerate(self.post_encs):
                 state_dict[f"post_encs.{i}"] = post_enc.clone()
+        if hasattr(self, "post_enc_scale") and "post_enc_scale" not in state_dict:
+            state_dict["post_enc_scale"] = self.post_enc_scale.clone()
+        if hasattr(self, "post_enc_scales"):
+            for i, post_enc_scale in enumerate(self.post_enc_scales):
+                if f"post_enc_scales.{i}" not in state_dict:
+                    state_dict[f"post_enc_scales.{i}"] = post_enc_scale.clone()
         self.load_state_dict(state_dict, strict=strict)
         barrier()
 

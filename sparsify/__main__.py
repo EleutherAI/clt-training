@@ -3,7 +3,9 @@ from contextlib import nullcontext, redirect_stdout
 from dataclasses import dataclass
 from datetime import timedelta
 from multiprocessing import cpu_count
+from pathlib import Path
 
+from huggingface_hub import snapshot_download
 import torch
 import torch.distributed as dist
 from datasets import Dataset, load_dataset
@@ -217,9 +219,18 @@ def run():
             trainer.load_state(f"checkpoints/{args.run_name}" or "checkpoints/unnamed")
         elif args.finetune:
             for name, sae in trainer.saes.items():
-                sae.load_state(
-                    f"{args.finetune}/{name}",
-                )
+                if not os.path.exists(f"{args.finetune}/{name}"):
+                    repo_path = snapshot_download(
+                        args.finetune,
+                        allow_patterns=f"{name}/*",
+                    )
+                    sae.load_state(
+                        Path(repo_path) / name,
+                    )
+                else:
+                    sae.load_state(
+                        f"{args.finetune}/{name}",
+                    )
 
         trainer.fit()
 

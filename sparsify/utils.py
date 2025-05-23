@@ -230,6 +230,7 @@ def load_sharded(
     current_state_dict: dict[str, DTensor],
     mesh: DeviceMesh,
     load_st: bool = True,
+    load_fast: bool = True,
 ):
     torch.distributed.barrier()
     if not load_st:
@@ -237,7 +238,7 @@ def load_sharded(
         current_state_dict = {
             k: v for k, v in current_state_dict.items() if isinstance(v, DTensor)
         }
-    if torch.distributed.get_rank() == 0:
+    if torch.distributed.get_rank() == 0 or load_fast:
         shard_dims = sharded_axis(current_state_dict)
         if load_st:
             cpu_state_dict = load_file(
@@ -258,14 +259,15 @@ def load_sharded(
         state_dicts = [
             {k: v[i] for k, v in partitioned_state_dict.items()} for i in range(tp_size)
         ]
-        state_dicts *= dp_size
-        torch.distributed.barrier()
-        torch.distributed.scatter_object_list(
-            [None],
-            state_dicts,
-            src=0,
-        )
-        cpu_state_dict = state_dicts[0]
+        if not load_fast:
+            state_dicts *= dp_size
+            torch.distributed.barrier()
+            torch.distributed.scatter_object_list(
+                [None],
+                state_dicts,
+                src=0,
+            )
+        cpu_state_dict = state_dicts[mesh.get_local_rank(1)]
     else:
         torch.distributed.barrier()
         obj_list = [None]

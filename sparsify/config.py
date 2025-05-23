@@ -91,6 +91,9 @@ class TrainConfig(Serializable):
     - `kl`: KL divergence of the final model logits w.r.t. the original logits.
     """
 
+    filter_bos: bool = False
+    """Filter out BOS tokens from the dataset for KL loss."""
+
     remove_transcoded_modules: bool = False
     """Don't run modules that are replaced for transcoders with CE loss."""
 

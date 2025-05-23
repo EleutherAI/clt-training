@@ -451,6 +451,8 @@ class Trainer:
             # Remember the original output shape since we'll need it for e2e training
             out_shape = outputs.shape
 
+            outputs_original = outputs
+
             # Flatten the batch and sequence dimensions
             outputs = outputs.flatten(0, 1)
             inputs = inputs.flatten(0, 1) if self.cfg.sae.transcode else outputs
@@ -554,6 +556,13 @@ class Trainer:
                     ).to_local()
                 output = output.reshape(out_shape).type_as(outputs)
 
+                if self.cfg.filter_bos:
+                    output = torch.where(
+                        bos_mask[..., None],
+                        outputs_original,
+                        output,
+                    )
+
                 # Replace the normal output with the SAE output
                 return (output, *aux_out) if aux_out is not None else output
             else:
@@ -581,6 +590,7 @@ class Trainer:
 
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
+            bos_mask = x == self.model.config.bos_token_id
 
             # Bookkeeping for dead feature detection
             N = x.numel()
