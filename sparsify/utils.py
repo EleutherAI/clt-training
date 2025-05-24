@@ -277,6 +277,8 @@ def load_sharded(
             src=0,
         )
         cpu_state_dict = obj_list[0]
+    print(cpu_state_dict.keys())
+    print(current_state_dict.keys())
     state_dict = {
         k: (
             DTensor.from_local(

@@ -57,7 +57,7 @@ class SparseCoderConfig(Serializable):
     coalesce_topk: Literal["none", "concat", "per-layer", "group"] = "none"
     """How to combine values and indices across layers."""
 
-    topk_coalesced: bool = True
+    topk_coalesced: bool = False
     """Whether to actually apply topk to the coalesced values."""
 
     @property
@@ -113,6 +113,9 @@ class TrainConfig(Serializable):
     k_decay_steps: int = 0
     """Number of steps over which to decay the number of active latents. Starts at
     input width * 10 and decays to k. Experimental feature."""
+    
+    k_anneal_mul: int = 10
+    """How much to increase k by for k-annealing."""
 
     auxk_alpha: float = 0.0
     """Weight of the auxiliary loss term."""

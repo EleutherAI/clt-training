@@ -161,6 +161,7 @@ class MidDecoder:
         no_extras: bool = False,
         denormalize: bool = True,
         add_post_enc: bool = True,
+        loss_mask: Tensor | None = None,
     ) -> ForwardOutput:
         # If we aren't given a distinct target, we're autoencoding
         if y is None:
@@ -218,6 +219,8 @@ class MidDecoder:
         else:
             # Compute the residual
             e = y - sae_out
+            if loss_mask is not None:
+                e = e * loss_mask[..., None]
 
             # Used as a denominator for putting everything on a reasonable scale
             total_variance = (y - y.mean(0)).pow(2).sum()
@@ -363,6 +366,7 @@ class SparseCoder(nn.Module):
                     self.W_decs = nn.ParameterList()
                     for _ in range(cfg.n_targets):
                         self.W_decs.append(create_W_dec())
+                    self.W_dec = self.W_decs[0]
                 else:
                     self.W_dec = create_W_dec()
 
@@ -406,6 +410,8 @@ class SparseCoder(nn.Module):
             for _ in range(cfg.n_targets):
                 self.b_decs.append(create_bias())
                 self.W_skips.append(create_W_skip())
+            self.W_skip = self.W_skips[0]
+            self.b_dec = self.b_decs[0]
         else:
             self.b_dec = create_bias()
             self.W_skip = create_W_skip()
@@ -570,6 +576,25 @@ class SparseCoder(nn.Module):
             for i, post_enc_scale in enumerate(self.post_enc_scales):
                 if f"post_enc_scales.{i}" not in state_dict:
                     state_dict[f"post_enc_scales.{i}"] = post_enc_scale.clone()
+        if hasattr(self, "W_decs") and "W_decs" not in state_dict:
+            del self.W_dec
+            state_dict["W_decs.0"] = state_dict.pop("W_dec")
+            for i, W_dec in enumerate(self.W_decs):
+                if i > 0:
+                    state_dict[f"W_decs.{i}"] = W_dec.clone()
+        if hasattr(self, "W_skips") and "W_skips" not in state_dict:
+            del self.W_skip
+            state_dict["W_skips.0"] = state_dict.pop("W_skip")
+            for i, W_skip in enumerate(self.W_skips):
+                if i > 0:
+                    state_dict[f"W_skips.{i}"] = W_skip.clone()
+        if hasattr(self, "b_decs") and "b_decs" not in state_dict:
+            del self.b_dec
+            state_dict["b_decs.0"] = state_dict.pop("b_dec")
+            for i, b_dec in enumerate(self.b_decs):
+                if i > 0:
+                    state_dict[f"b_decs.{i}"] = b_dec.clone()
+            
         self.load_state_dict(state_dict, strict=strict)
         barrier()
 
@@ -653,6 +678,7 @@ class SparseCoder(nn.Module):
         *,
         dead_mask: Tensor | None = None,
         return_mid_decoder: bool = False,
+        loss_mask: Tensor | None = None,
     ) -> ForwardOutput | MidDecoder:
         top_acts, top_indices, pre_acts = self.encode(x)
         if self.multi_target:
@@ -660,11 +686,13 @@ class SparseCoder(nn.Module):
 
         x = self.normalize_input(x)
 
-        mid_decoder = MidDecoder(self, x, top_acts, top_indices, dead_mask, pre_acts)
+        mid_decoder = MidDecoder(
+            self, x, top_acts, top_indices, dead_mask, pre_acts
+        )
         if self.multi_target or return_mid_decoder:
             return mid_decoder
         else:
-            return mid_decoder(y, 0)
+            return mid_decoder(y, 0, loss_mask=loss_mask)
 
     @torch.no_grad()
     def set_decoder_norm_to_unit_norm(self):

@@ -9,6 +9,7 @@ from torch import Tensor
 from torch.distributed.tensor import DTensor
 
 
+@torch.compile(mode="max-autotune")
 def quintic_newtonschulz(G: Tensor, steps: int) -> Tensor:
     """
     Newton-Schulz iteration to compute the orthogonalization of G. We opt to use a

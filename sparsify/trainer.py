@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 from fnmatch import fnmatchcase
 from glob import glob
 from typing import Sized
+import os
 
 import torch
 import torch.distributed as dist
@@ -215,7 +216,7 @@ class Trainer:
         }
 
         num_latents = list(self.saes.values())[0].num_latents
-        self.initial_k = min(num_latents, round(list(input_widths.values())[0] * 10))
+        self.initial_k = min(num_latents, round(list(input_widths.values())[0] * self.cfg.k_anneal_mul))
         self.final_k = self.cfg.sae.k
 
         self.best_loss = (
@@ -268,20 +269,25 @@ class Trainer:
                 for param in sae.parameters():
                     param.grad = torch.zeros_like(param)
         for i, optimizer in enumerate(self.optimizers):
+            opt_state_path = f"{path}/optimizer_{i}.pt"
+            if not os.path.exists(opt_state_path):
+                print(f"No optimizer state found at {opt_state_path}, skipping")
+                continue
+            # we haven't stepped the optimizer yet, so the buffers aren't filled
+            # we need to perform a fake step
+            for sae in self.saes.values():
+                for param in sae.parameters():
+                    param.grad = torch.zeros_like(param)
+            optimizer.step()
+            optimizer.zero_grad()
+            for sae in self.saes.values():
+                for param in sae.parameters():
+                    param.grad = torch.zeros_like(param)
+            optimizer.step()
+            optimizer.zero_grad()
             if self.mesh is None:
-                for sae in self.saes.values():
-                    for param in sae.parameters():
-                        param.grad = torch.zeros_like(param)
-                optimizer.step()
-                optimizer.zero_grad()
-                for sae in self.saes.values():
-                    for param in sae.parameters():
-                        param.grad = torch.zeros_like(param)
-                optimizer.step()
-                optimizer.zero_grad()
-
                 opt_state = torch.load(
-                    f"{path}/optimizer_{i}.pt", map_location=device, weights_only=True
+                    opt_state_path, map_location=device, weights_only=True
                 )
                 from .utils import flatten_dict
 
@@ -290,12 +296,8 @@ class Trainer:
                         print(k, v.shape, opt_state[k].shape)
                 opt_state = unflatten_dict(opt_state)
             else:
-                # we haven't stepped the optimizer yet, so the buffers aren't filled
-                # we need to perform a fake step
-                optimizer.step()
-                optimizer.zero_grad()
                 opt_state = load_sharded(
-                    f"{path}/optimizer_{i}.pt",
+                    opt_state_path,
                     optimizer.state_dict(),
                     self.mesh,
                     load_st=False,
@@ -463,8 +465,14 @@ class Trainer:
                     outputs = DTensor.from_local(
                         outputs, self.mesh, [Shard(0), Shard(0)]
                     )
+                    bos_mask_mesh = DTensor.from_local(
+                        bos_mask.flatten(0, 1), self.mesh, [Shard(0), Shard(0)]
+                    )
                 inputs = inputs.redistribute(self.mesh, [Shard(0), Replicate()])
                 outputs = outputs.redistribute(self.mesh, [Shard(0), Shard(1)])
+                bos_mask_mesh = bos_mask_mesh.redistribute(
+                    self.mesh, [Shard(0), Replicate()]
+                )
 
             # On the first iteration, initialize the encoder and decoder biases
             raw = self.saes[name]
@@ -532,6 +540,7 @@ class Trainer:
                     if self.cfg.auxk_alpha > 0
                     else None
                 ),
+                loss_mask=~bos_mask_mesh if self.cfg.loss_fn == "fvu" and self.cfg.filter_bos else None,
             )
             output = out.sae_out
 

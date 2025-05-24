@@ -28,6 +28,7 @@ class CrossLayerRunner(object):
         y: Tensor,
         module_name: str,
         detach_grad: bool = False,
+        **kwargs,
     ):
         self.outputs[module_name] = mid_out
 
@@ -61,6 +62,7 @@ class CrossLayerRunner(object):
                     addition=(0 if hookpoint != module_name else (output / divide_by)),
                     no_extras=hookpoint != module_name,
                     denormalize=hookpoint == module_name,
+                    **kwargs,
                 )
                 if hookpoint != module_name:
                     output += out.sae_out
@@ -101,7 +103,7 @@ class CrossLayerRunner(object):
                     indices=best_indices,
                     activations=best_values,
                 )
-                out = new_mid_out(y, index=0, add_post_enc=False)
+                out = new_mid_out(y, index=0, add_post_enc=False, **kwargs)
                 del mid_out.x
             elif mid_out.sparse_coder.cfg.coalesce_topk == "per-layer":
                 for i, layer_mid in enumerate(layer_mids):
@@ -127,6 +129,7 @@ class CrossLayerRunner(object):
                         addition=(0 if hookpoint != module_name else output),
                         no_extras=hookpoint != module_name,
                         denormalize=hookpoint == module_name,
+                        **kwargs,
                     )
                     if hookpoint != module_name:
                         output += out.sae_out
@@ -163,10 +166,14 @@ class CrossLayerRunner(object):
         sparse_coder: SparseCoder,
         module_name: str,
         detach_grad: bool = False,
-        **kwargs,
+        dead_mask: Tensor | None = None,
+        loss_mask: Tensor | None = None,
+        *,
+        encoder_kwargs: dict = {},
+        decoder_kwargs: dict = {},
     ):
-        mid_out = self.encode(x, sparse_coder, **kwargs)
-        return self.decode(mid_out, y, module_name, detach_grad)
+        mid_out = self.encode(x, sparse_coder, dead_mask=dead_mask, **encoder_kwargs)
+        return self.decode(mid_out, y, module_name, detach_grad, loss_mask=loss_mask, **decoder_kwargs)
 
     def restore(self):
         for restorable, was_last in self.to_restore.values():
