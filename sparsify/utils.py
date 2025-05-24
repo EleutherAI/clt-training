@@ -289,10 +289,10 @@ def load_sharded(
         )
         for k, v in cpu_state_dict.items()
     }
-    for k, v in state_dict.items():
-        if isinstance(v, torch.Tensor):
-            if v.shape != (old_current_state_dict[k].shape if k in old_current_state_dict else None):
-                print(k, v.shape, old_current_state_dict[k].shape)
+    # for k, v in state_dict.items():
+    #     if isinstance(v, torch.Tensor):
+    #         if v.shape != (old_current_state_dict[k].shape if k in old_current_state_dict else None):
+    #             print(k, v.shape, old_current_state_dict[k].shape)
     if not load_st:
         state_dict = unflatten_dict(state_dict)
     print(f"Loaded {filename}")

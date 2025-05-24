@@ -161,8 +161,9 @@ class Trainer:
                     )
                 ]
             case "muon":
-                params = [p for sae in self.saes.values() for _, p in sorted(sae.state_dict().items())]
+                params = [p for sae in self.saes.values() for _, p in sorted(sae.named_parameters())]
                 muon_params = [p for p in params if p.ndim >= 2]
+                muon_param_set = set(muon_params)
                 lrs = [f"{cfg.lr or 2e-3:.2e}"]
 
                 self.optimizers = [
@@ -173,7 +174,7 @@ class Trainer:
                         ddp=True,
                         group=None if self.mesh is None else self.mesh.get_group(0),
                     ),
-                    torch.optim.Adam([param for param in params if param not in muon_params], lr=cfg.lr or 2e-3),
+                    torch.optim.Adam([param for param in params if param not in muon_param_set], lr=cfg.lr or 2e-3),
                 ]
                 self.lr_schedulers = [
                     get_linear_schedule_with_warmup(self.optimizers[0], 0, num_batches),
