@@ -112,7 +112,7 @@ class Muon(torch.optim.Optimizer):
 
             # Group parameters by their device and number of elements. For each group,
             # we pre-allocate a buffer to store the updates from all ranks.
-            for size in {ploc(p.data).numel() for p in params}:
+            for size in sorted({ploc(p.data).numel() for p in params}):
                 b = torch.empty(
                     self.world_size, size, dtype=torch.bfloat16, device=device
                 )

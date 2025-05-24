@@ -235,6 +235,7 @@ def load_sharded(
     torch.distributed.barrier()
     if not load_st:
         current_state_dict = flatten_dict(current_state_dict)
+        old_current_state_dict = current_state_dict
         current_state_dict = {
             k: v for k, v in current_state_dict.items() if isinstance(v, DTensor)
         }
@@ -277,18 +278,21 @@ def load_sharded(
             src=0,
         )
         cpu_state_dict = obj_list[0]
-    print(cpu_state_dict.keys())
-    print(current_state_dict.keys())
     state_dict = {
         k: (
-            DTensor.from_local(
-                v.to(torch.get_default_device()), mesh, current_state_dict[k].placements
-            )
+            (DTensor.from_local(
+                v.to(torch.get_default_device()), mesh,
+                current_state_dict[k].placements
+            ) if k in current_state_dict else v.to(torch.get_default_device()))
             if isinstance(v, torch.Tensor)
             else v
         )
         for k, v in cpu_state_dict.items()
     }
+    for k, v in state_dict.items():
+        if isinstance(v, torch.Tensor):
+            if v.shape != (old_current_state_dict[k].shape if k in old_current_state_dict else None):
+                print(k, v.shape, old_current_state_dict[k].shape)
     if not load_st:
         state_dict = unflatten_dict(state_dict)
     print(f"Loaded {filename}")

@@ -161,8 +161,8 @@ class Trainer:
                     )
                 ]
             case "muon":
-                params = {p for sae in self.saes.values() for p in sae.parameters()}
-                muon_params = {p for p in params if p.ndim >= 2}
+                params = [p for sae in self.saes.values() for _, p in sorted(sae.state_dict().items())]
+                muon_params = [p for p in params if p.ndim >= 2]
                 lrs = [f"{cfg.lr or 2e-3:.2e}"]
 
                 self.optimizers = [
@@ -173,7 +173,7 @@ class Trainer:
                         ddp=True,
                         group=None if self.mesh is None else self.mesh.get_group(0),
                     ),
-                    torch.optim.Adam(params - muon_params, lr=cfg.lr or 2e-3),
+                    torch.optim.Adam([param for param in params if param not in muon_params], lr=cfg.lr or 2e-3),
                 ]
                 self.lr_schedulers = [
                     get_linear_schedule_with_warmup(self.optimizers[0], 0, num_batches),
@@ -289,11 +289,6 @@ class Trainer:
                 opt_state = torch.load(
                     opt_state_path, map_location=device, weights_only=True
                 )
-                from .utils import flatten_dict
-
-                for k, v in flatten_dict(optimizer.state_dict()).items():
-                    if isinstance(v, torch.Tensor):
-                        print(k, v.shape, opt_state[k].shape)
                 opt_state = unflatten_dict(opt_state)
             else:
                 opt_state = load_sharded(
