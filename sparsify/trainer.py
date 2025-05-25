@@ -217,7 +217,7 @@ class Trainer:
         }
 
         num_latents = list(self.saes.values())[0].num_latents
-        self.initial_k = min(num_latents, round(list(input_widths.values())[0] * self.cfg.k_anneal_mul))
+        self.initial_k = min(num_latents, self.cfg.sae.k * self.cfg.k_anneal_mul)
         self.final_k = self.cfg.sae.k
 
         self.best_loss = (
@@ -596,6 +596,8 @@ class Trainer:
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
             bos_mask = x == self.model.config.bos_token_id
+            
+            runner.reset()
 
             # Bookkeeping for dead feature detection
             N = x.numel()

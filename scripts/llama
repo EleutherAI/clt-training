@@ -13,4 +13,3 @@ layers.12.mlp layers.13.mlp layers.14.mlp layers.15.mlp \
 --filter_bos True \
 --cross_layer=16 \
 --coalesce_topk=concat --topk_coalesced=False --post_encoder_scale=True --normalize_io=True \
-# --k_decay_steps=5000 --k_anneal_mul=2
