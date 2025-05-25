@@ -161,8 +161,13 @@ class Trainer:
                     )
                 ]
             case "muon":
-                params = {p for sae in self.saes.values() for p in sae.parameters()}
-                muon_params = {p for p in params if p.ndim >= 2}
+                params = [
+                    p
+                    for sae in self.saes.values()
+                    for _, p in sorted(sae.named_parameters())
+                ]
+                muon_params = [p for p in params if p.ndim >= 2]
+                muon_param_set = set(muon_params)
                 lrs = [f"{cfg.lr or 2e-3:.2e}"]
 
                 self.optimizers = [
@@ -173,7 +178,10 @@ class Trainer:
                         ddp=True,
                         group=None if self.mesh is None else self.mesh.get_group(0),
                     ),
-                    torch.optim.Adam(params - muon_params, lr=cfg.lr or 2e-3),
+                    torch.optim.Adam(
+                        [param for param in params if param not in muon_param_set],
+                        lr=cfg.lr or 2e-3,
+                    ),
                 ]
                 self.lr_schedulers = [
                     get_linear_schedule_with_warmup(self.optimizers[0], 0, num_batches),
@@ -216,9 +224,7 @@ class Trainer:
         }
 
         num_latents = list(self.saes.values())[0].num_latents
-        self.initial_k = min(
-            num_latents, round(list(input_widths.values())[0] * self.cfg.k_anneal_mul)
-        )
+        self.initial_k = min(num_latents, self.cfg.sae.k * self.cfg.k_anneal_mul)
         self.final_k = self.cfg.sae.k
 
         self.best_loss = (
@@ -601,6 +607,8 @@ class Trainer:
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
             bos_mask = x == self.model.config.bos_token_id
+
+            runner.reset()
 
             # Bookkeeping for dead feature detection
             N = x.numel()

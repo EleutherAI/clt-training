@@ -12,6 +12,4 @@ layers.12.mlp layers.13.mlp layers.14.mlp layers.15.mlp \
 --filter_bos True \
 --cross_layer=16 \
 --coalesce_topk=concat --topk_coalesced=False --post_encoder_scale=True --normalize_io=True \
---run_name llama/ $@ \
-# --run_name llama/$1 ${@:2} \
-# --k_decay_steps=5000 --k_anneal_mul=2
+--run_name llama/$1 ${@:2} \

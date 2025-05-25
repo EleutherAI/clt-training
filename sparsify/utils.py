@@ -291,8 +291,14 @@ def load_sharded(
         cpu_state_dict = obj_list[0]
     state_dict = {
         k: (
-            DTensor.from_local(
-                v.to(torch.get_default_device()), mesh, current_state_dict[k].placements
+            (
+                DTensor.from_local(
+                    v.to(torch.get_default_device()),
+                    mesh,
+                    current_state_dict[k].placements,
+                )
+                if k in current_state_dict
+                else v.to(torch.get_default_device())
             )
             if isinstance(v, torch.Tensor)
             else v
