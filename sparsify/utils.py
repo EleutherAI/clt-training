@@ -5,7 +5,13 @@ from typing import Any, Optional, Type, TypeVar, cast
 import torch
 from safetensors.torch import load_file, save_file
 from torch import Tensor, nn
-from torch.distributed.tensor import DTensor, Replicate, Shard, Partial, distribute_tensor
+from torch.distributed.tensor import (
+    DTensor,
+    Partial,
+    Replicate,
+    Shard,
+    distribute_tensor,
+)
 from torch.distributed.tensor.device_mesh import DeviceMesh
 from transformers import PreTrainedModel
 
@@ -164,12 +170,15 @@ def save_sharded(
     filename: str,
     mesh: Optional[DeviceMesh] = None,
     save_st: bool = True,
+    unflatten: bool | None = None,
 ):
+    if unflatten is None:
+        unflatten = not save_st
     if mesh is not None and mesh.get_local_rank(0) != 0:
         torch.distributed.barrier()
         return False
 
-    if not save_st:
+    if unflatten:
         start_state_dict = flatten_dict(start_state_dict)
 
     tensor_state_dict = {
@@ -231,9 +240,12 @@ def load_sharded(
     mesh: DeviceMesh,
     load_st: bool = True,
     load_fast: bool = True,
+    unflatten: bool | None = None,
 ):
+    if unflatten is None:
+        unflatten = not load_st
     torch.distributed.barrier()
-    if not load_st:
+    if unflatten:
         current_state_dict = flatten_dict(current_state_dict)
         current_state_dict = {
             k: v for k, v in current_state_dict.items() if isinstance(v, DTensor)
@@ -277,8 +289,6 @@ def load_sharded(
             src=0,
         )
         cpu_state_dict = obj_list[0]
-    print(cpu_state_dict.keys())
-    print(current_state_dict.keys())
     state_dict = {
         k: (
             DTensor.from_local(
@@ -289,7 +299,7 @@ def load_sharded(
         )
         for k, v in cpu_state_dict.items()
     }
-    if not load_st:
+    if unflatten:
         state_dict = unflatten_dict(state_dict)
     print(f"Loaded {filename}")
     return state_dict
@@ -315,7 +325,8 @@ def triton_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
     #     W_dec.T,
     # )
     # indices = torch.arange(top_indices.numel(), device=top_indices.device)
-    # example_indices, feature_indices = indices // top_indices.shape[1], top_indices.flatten()
+    # example_indices, feature_indices = \
+    # indices // top_indices.shape[1], top_indices.flatten()
     # return COODecoder.apply(
     #     example_indices,
     #     feature_indices,
@@ -357,7 +368,11 @@ def parallelize_decoder(decoder):
                         rank = mesh.get_local_rank(1)
                         start_idx = rank * features_per_rank
                         end_idx = start_idx + features_per_rank
-                        local_acts = local_acts * (start_idx <= local_indices) * (local_indices < end_idx)
+                        local_acts = (
+                            local_acts
+                            * (start_idx <= local_indices)
+                            * (local_indices < end_idx)
+                        )
                         local_indices = (local_indices - start_idx) % features_per_rank
                         placement[i] = Partial("sum")
             for i, p in enumerate(top_indices.placements):
@@ -366,9 +381,7 @@ def parallelize_decoder(decoder):
             placement = [
                 placement.get(i, Replicate()) for i in range(len(W_dec.placements))
             ]
-            result_local = decoder(
-                local_indices, local_acts, W_dec.to_local()
-            )
+            result_local = decoder(local_indices, local_acts, W_dec.to_local())
             result = DTensor.from_local(
                 result_local, top_indices.device_mesh, placement
             )
@@ -387,8 +400,8 @@ def parallelize_decoder(decoder):
 
 
 try:
+    # from .kernels import COODecoder, TritonDecoder
     from .xformers import xformers_embedding_bag
-    from .kernels import COODecoder, TritonDecoder
 except ImportError:
     decoder_impl = eager_decode
     print("Triton not installed, using eager implementation of sparse decoder.")

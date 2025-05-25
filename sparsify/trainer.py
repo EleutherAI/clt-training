@@ -1,10 +1,10 @@
+import os
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from fnmatch import fnmatchcase
 from glob import glob
 from typing import Sized
-import os
 
 import torch
 import torch.distributed as dist
@@ -216,7 +216,9 @@ class Trainer:
         }
 
         num_latents = list(self.saes.values())[0].num_latents
-        self.initial_k = min(num_latents, round(list(input_widths.values())[0] * self.cfg.k_anneal_mul))
+        self.initial_k = min(
+            num_latents, round(list(input_widths.values())[0] * self.cfg.k_anneal_mul)
+        )
         self.final_k = self.cfg.sae.k
 
         self.best_loss = (
@@ -289,11 +291,6 @@ class Trainer:
                 opt_state = torch.load(
                     opt_state_path, map_location=device, weights_only=True
                 )
-                from .utils import flatten_dict
-
-                for k, v in flatten_dict(optimizer.state_dict()).items():
-                    if isinstance(v, torch.Tensor):
-                        print(k, v.shape, opt_state[k].shape)
                 opt_state = unflatten_dict(opt_state)
             else:
                 opt_state = load_sharded(
@@ -540,7 +537,11 @@ class Trainer:
                     if self.cfg.auxk_alpha > 0
                     else None
                 ),
-                loss_mask=~bos_mask_mesh if self.cfg.loss_fn == "fvu" and self.cfg.filter_bos else None,
+                loss_mask=(
+                    ~bos_mask_mesh
+                    if self.cfg.loss_fn == "fvu" and self.cfg.filter_bos
+                    else None
+                ),
             )
             output = out.sae_out
 
@@ -788,6 +789,7 @@ class Trainer:
                 f"{path}/optimizer_{i}.pt",
                 self.mesh,
                 save_st=False,
+                unflatten=True,
             )
 
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
