@@ -126,6 +126,9 @@ class TrainConfig(Serializable):
     hookpoints: list[str] = list_field()
     """List of hookpoints to train sparse coders on."""
 
+    hookpoints_in: list[str] = list_field()
+    """List of input hookpoints for sparse coders."""
+
     init_seeds: list[int] = list_field(0)
     """List of random seeds to use for initialization. If more than one, train a sparse
     coder for each seed."""
