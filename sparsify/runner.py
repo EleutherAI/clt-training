@@ -28,8 +28,10 @@ class CrossLayerRunner(object):
         y: Tensor,
         module_name: str,
         detach_grad: bool = False,
+        advance: bool = False,
         **kwargs,
     ):
+        if advance:
         self.outputs[module_name] = mid_out
 
         candidate_indices = []
@@ -52,7 +54,7 @@ class CrossLayerRunner(object):
                 layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents
             )
             candidate_values.append(layer_mid.current_latent_acts)
-            if detach_grad:
+            if detach_grad and advance:
                 self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
             if layer_mid.will_be_last:
                 to_delete.add(hookpoint)
@@ -104,7 +106,8 @@ class CrossLayerRunner(object):
                     activations=best_values,
                 )
                 out = new_mid_out(y, index=0, add_post_enc=False, **kwargs)
-                del mid_out.x
+                if advance:
+                    del mid_out.x
             elif mid_out.sparse_coder.cfg.coalesce_topk == "per-layer":
                 for i, layer_mid in enumerate(layer_mids):
                     hookpoint = hookpoints[i]
@@ -155,8 +158,13 @@ class CrossLayerRunner(object):
         # last output guaranteed to be the current layer
         assert hookpoint == module_name
 
-        for hookpoint in to_delete:
-            del self.outputs[hookpoint]
+        if not advance:
+            for layer_mid in layer_mids:
+                layer_mid.prev()
+
+        if advance:
+            for hookpoint in to_delete:
+                del self.outputs[hookpoint]
         return out
 
     def __call__(
