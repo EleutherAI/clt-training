@@ -32,7 +32,7 @@ class CrossLayerRunner(object):
         **kwargs,
     ):
         if advance:
-        self.outputs[module_name] = mid_out
+            self.outputs[module_name] = mid_out
 
         candidate_indices = []
         candidate_values = []
