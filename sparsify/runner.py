@@ -28,7 +28,7 @@ class CrossLayerRunner(object):
         y: Tensor,
         module_name: str,
         detach_grad: bool = False,
-        advance: bool = False,
+        advance: bool = True,
         **kwargs,
     ):
         self.outputs[module_name] = mid_out
