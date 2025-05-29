@@ -314,7 +314,7 @@ def load_sharded(
 # Fallback implementation of SAE decoder
 def eager_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
     return nn.functional.embedding_bag(
-        top_indices, W_dec, per_sample_weights=top_acts, mode="sum"
+        top_indices, W_dec, per_sample_weights=top_acts.float(), mode="sum"
     )
 
 

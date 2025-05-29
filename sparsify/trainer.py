@@ -432,11 +432,18 @@ class Trainer:
 
         name_to_module = {
             name: self.model.base_model.get_submodule(name)
-            for name in self.cfg.hookpoints
+            for name in self.cfg.hookpoints + self.cfg.hookpoints_in
         }
         module_to_name = {v: k for k, v in name_to_module.items()}
+        
+        cached_inputs = {}
 
         runner = CrossLayerRunner()
+
+        def record_inputs(module: nn.Module, inputs, outputs):
+            if isinstance(inputs, tuple):
+                inputs = inputs[0]
+            cached_inputs[module_to_name[module]] = inputs
 
         def hook(module: nn.Module, inputs, outputs):
             barrier()
@@ -448,6 +455,11 @@ class Trainer:
                 inputs = inputs[0]
             if isinstance(outputs, tuple):
                 outputs, *aux_out = outputs
+    
+            module_name = module_to_name[module]
+            layer_idx = self.cfg.hookpoints.index(module_name)
+            if layer_idx < len(self.cfg.hookpoints_in):
+                inputs = cached_inputs.pop(self.cfg.hookpoints_in[layer_idx])
 
             # Name may optionally contain a suffix of the form /seedN where N is an
             # integer. We only care about the part before the slash.
@@ -625,7 +637,8 @@ class Trainer:
 
             # Forward pass on the model to get the next batch of activations
             handles = [
-                mod.register_forward_hook(hook) for mod in name_to_module.values()
+                mod.register_forward_hook(hook if name in self.cfg.hookpoints else record_inputs)
+                for name, mod in name_to_module.items()
             ]
             try:
                 with self.implicit_replication():

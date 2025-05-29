@@ -97,6 +97,9 @@ class MidDecoder:
 
     def next(self):
         self.index += 1
+    
+    def prev(self):
+        self.index = max(0, self.index - 1)
 
     @property
     def will_be_last(self):
