@@ -31,8 +31,7 @@ class CrossLayerRunner(object):
         advance: bool = False,
         **kwargs,
     ):
-        if advance:
-            self.outputs[module_name] = mid_out
+        self.outputs[module_name] = mid_out
 
         candidate_indices = []
         candidate_values = []
@@ -165,6 +164,7 @@ class CrossLayerRunner(object):
         if advance:
             for hookpoint in to_delete:
                 del self.outputs[hookpoint]
+
         return out
 
     def __call__(
