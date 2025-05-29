@@ -443,7 +443,7 @@ class Trainer:
         def record_inputs(module: nn.Module, inputs, outputs):
             if isinstance(inputs, tuple):
                 inputs = inputs[0]
-            cached_inputs[module_to_name[module]] = inputs.detach()
+            cached_inputs[module_to_name[module]] = inputs
 
         def hook(module: nn.Module, inputs, outputs):
             barrier()
