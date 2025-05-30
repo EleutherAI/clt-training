@@ -267,9 +267,15 @@ class Trainer:
         )
 
         for i, scheduler in enumerate(self.lr_schedulers):
-            lr_state = torch.load(
-                f"{path}/lr_scheduler_{i}.pt", map_location=device, weights_only=True
-            )
+            try:
+                lr_state = torch.load(
+                    f"{path}/lr_scheduler_{i}.pt",
+                    map_location=device,
+                    weights_only=True,
+                )
+            except FileNotFoundError:
+                print(f"No lr_scheduler_{i}.pt found at {path}, skipping")
+                continue
             scheduler.load_state_dict(lr_state)
 
         if self.mesh is not None:
@@ -435,7 +441,7 @@ class Trainer:
             for name in self.cfg.hookpoints + self.cfg.hookpoints_in
         }
         module_to_name = {v: k for k, v in name_to_module.items()}
-        
+
         cached_inputs = {}
 
         runner = CrossLayerRunner()
@@ -455,7 +461,7 @@ class Trainer:
                 inputs = inputs[0]
             if isinstance(outputs, tuple):
                 outputs, *aux_out = outputs
-    
+
             module_name = module_to_name[module]
             layer_idx = self.cfg.hookpoints.index(module_name)
             if layer_idx < len(self.cfg.hookpoints_in):
@@ -637,7 +643,9 @@ class Trainer:
 
             # Forward pass on the model to get the next batch of activations
             handles = [
-                mod.register_forward_hook(hook if name in self.cfg.hookpoints else record_inputs)
+                mod.register_forward_hook(
+                    hook if name in self.cfg.hookpoints else record_inputs
+                )
                 for name, mod in name_to_module.items()
             ]
             try:
@@ -805,8 +813,15 @@ class Trainer:
             sae.save_to_disk(f"{path}/{name}")
 
         for i, optimizer in enumerate(self.optimizers):
+            optimizer_state_dict = optimizer.state_dict()
+            if isinstance(optimizer, Muon):
+                for param_group in optimizer_state_dict["param_groups"]:
+                    if "update_buffer" in param_group:
+                        del param_group["update_buffer"]
+                    if "update_buffer_views" in param_group:
+                        del param_group["update_buffer_views"]
             save_sharded(
-                optimizer.state_dict(),
+                optimizer_state_dict,
                 f"{path}/optimizer_{i}.pt",
                 self.mesh,
                 save_st=False,
