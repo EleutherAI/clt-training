@@ -5,12 +5,12 @@ PORT=$((PORT + 1000))
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
 --ctx_len 128 \
 --transcode=True --skip_connection=True \
---batch_size=4 --expansion_factor=256 --tp=4 \
+--batch_size=16 --expansion_factor=128 --tp=4 \
 --hookpoints layers.0.mlp layers.1.mlp layers.2.mlp layers.3.mlp layers.4.mlp layers.5.mlp layers.6.mlp layers.7.mlp layers.8.mlp layers.9.mlp layers.10.mlp layers.11.mlp \
 layers.12.mlp layers.13.mlp layers.14.mlp layers.15.mlp \
 layers.16.mlp layers.17.mlp layers.18.mlp layers.19.mlp layers.20.mlp layers.21.mlp layers.22.mlp layers.23.mlp \
 layers.24.mlp layers.25.mlp layers.26.mlp layers.27.mlp layers.28.mlp layers.29.mlp \
---optimizer muon --lr 2e-4 \
+--optimizer adam --lr 2e-4 --lr_warmup_steps 50 \
 --filter_bos True \
 --cross_layer=32 \
 --k=32 \
