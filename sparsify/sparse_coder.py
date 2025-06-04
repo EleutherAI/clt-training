@@ -193,8 +193,7 @@ class SparseCoder(nn.Module):
         )
 
         if self.cfg.bilinear:
-            preacts2 = self.encoder2(x) / self.cfg.k
-            preacts2 = torch.nn.functional.softplus(preacts2)
+            preacts2 = self.encoder2(x).sigmoid()
             values2 = torch.gather(preacts2, dim=1, index=result.top_indices)
             result = EncoderOutput(
                 result.top_acts * values2,
