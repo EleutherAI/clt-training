@@ -1,0 +1,34 @@
+#!/bin/bash
+set -e
+PORT=$RANDOM
+PORT=$((PORT + 1000))
+
+BS=$1
+LR=$2
+NAME=bs$BS-lr$LR
+if [ -z "$3" ]; then
+    CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
+else
+    if [ "$3" == "none" ]; then
+        CROSSING=""
+    elif [ "$3" == "tied" ]; then
+        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
+    elif [ "$3" == "cross" ]; then
+        CROSSING="--cross_layer=12"
+    else
+        echo "Invalid option: $3"
+        exit 1
+    fi
+    NAME=$NAME-$3
+fi
+
+WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
+openai-community/gpt2 --ctx_len 128 \
+--transcode=True --skip_connection=True \
+--batch_size=$BS --expansion_factor=128 --tp=3 \
+--hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \
+--run_name gpt2-sweep/$NAME \
+$CROSSING \
+--post_encoder_scale=True --normalize_io=True \
+--lr $LR --optimizer adam --lr_warmup_steps 50 \
+--save_every 100000000000
