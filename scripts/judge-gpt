@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+MODEL_NAME=gpt2
+CHECKPOINT_PATH=$PWD/checkpoints/gpt2-sweep
+NAME=$1
+
+SAVE_DIR=$PWD/results/gpt2-eval/$NAME
+mkdir -p $SAVE_DIR
+
+PROMPT_NAME=alice-$NAME
+SCAN=$MODEL_NAME-$NAME
+set -e
+PROMPT_TEXT="<|endoftext|>In another moment, down went Alice after it, never once considering how in the world she was to get out again."
+cd ../attribution_graph
+uv run python -m attribute \
+--cache_path=nowhere \
+--name $PROMPT_NAME \
+--scan "$SCAN" \
+"$PROMPT_TEXT" \
+--cache_features=False --save_graph=False \
+--save_dir=$SAVE_DIR \
+--transcoder_path="$CHECKPOINT_PATH/$NAME" --model_name="$MODEL_NAME" --remove_prefix 1

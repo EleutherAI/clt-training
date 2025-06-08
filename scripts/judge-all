@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -e
+scripts/judge-gpt bs8-lr3e-4-tied-ef128-k16
+scripts/judge-gpt bs8-lr2e-4-none-ef128-k16

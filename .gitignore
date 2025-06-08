@@ -163,3 +163,4 @@ checkpoints/
 wandb/
 
 /images
+/results

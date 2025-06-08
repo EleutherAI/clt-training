@@ -21,14 +21,32 @@ else
     fi
     NAME=$NAME-$3
 fi
+if [ -z "$4" ]; then
+    EF=128
+else
+    EF=$4
+fi
+NAME=$NAME-ef$EF
+if [ -z "$5" ]; then
+    K=16
+else
+    K=$5
+fi
+NAME=$NAME-k$K
+
+SAVE_ARGS="--save_every 100000000000"
+if ! [ -z "$DO_SAVE" ]; then
+    echo "Saving now"
+    SAVE_ARGS=""
+fi
 
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
 openai-community/gpt2 --ctx_len 128 --filter_bos=True \
 --transcode=True --skip_connection=True \
---batch_size=$BS --expansion_factor=128 --tp=3 \
+--batch_size=$BS --expansion_factor=$EF --tp=4 \
 --hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \
 --run_name gpt2-sweep/$NAME \
 $CROSSING \
 --post_encoder_scale=True --normalize_io=True \
 --lr $LR --optimizer adam --lr_warmup_steps 50 \
---save_every 100000000000
+$SAVE_ARGS
