@@ -5,7 +5,7 @@ PORT=$((PORT + 1000))
 
 BS=$1
 LR=$2
-NAME=bs${BS}_lr$LR
+NAME=bs${BS}-lr$LR
 if [ -z "$3" ]; then
     CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
 else
@@ -19,27 +19,27 @@ else
         echo "Invalid option: $3"
         exit 1
     fi
-    NAME=${NAME}_$3
+    NAME=${NAME}-$3
 fi
 if [ -z "$4" ]; then
     EF=128
 else
     EF=$4
 fi
-NAME=${NAME}_ef$EF
+NAME=${NAME}-ef$EF
 if [ -z "$5" ]; then
     K=16
 else
     K=$5
 fi
-NAME=${NAME}_k$K
+NAME=${NAME}-k$K
 
 SAVE_ARGS="--save_every 100000000000"
 if ! [ -z "$DO_SAVE" ]; then
     SAVE_ARGS="--save_every 100"
 fi
 
-N_DEVICES=2
+N_DEVICES=4
 # N_DEVICES=1
 # WANDB_ENTITY=eleutherai uv run python -m sparsify \
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \

@@ -361,16 +361,17 @@ class AvgGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: Tensor, group: torch.distributed.ProcessGroup):
         ctx.group = group
-        return torch.distributed.all_reduce(
-            x.clone(), op=torch.distributed.ReduceOp.AVG, group=group
-        )
+        x = x.clone()
+        torch.distributed.all_reduce(x, op=torch.distributed.ReduceOp.AVG, group=group)
+        return x
 
     @staticmethod
     def backward(ctx, grad_output: Tensor):
         # we use this for different output groups in the decoder, so we need to
         # sum the gradients
-        grad_output = torch.distributed.all_reduce(
-            grad_output.clone(), op=torch.distributed.ReduceOp.SUM, group=ctx.group
+        grad_output = grad_output.clone()
+        torch.distributed.all_reduce(
+            grad_output, op=torch.distributed.ReduceOp.SUM, group=ctx.group
         )
         return grad_output, None
 
@@ -397,7 +398,9 @@ def parallelize_decoder(decoder):
             assert top_indices.placements == top_acts.placements
             placement = {}
             local_acts = top_acts.to_local()
+            assert local_acts is not None, "local_acts is None (1)"
             local_acts = AvgGrad.apply(local_acts, mesh.get_group("tp"))
+            assert local_acts is not None, "local_acts is None (2)"
 
             local_indices = top_indices.to_local()
             for i, p in enumerate(W_dec.placements):

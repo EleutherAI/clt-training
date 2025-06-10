@@ -635,6 +635,7 @@ class SparseCoder(nn.Module):
                     f,
                 )
 
+    @property
     def device(self):
         return self.encoder.weight.device
 
