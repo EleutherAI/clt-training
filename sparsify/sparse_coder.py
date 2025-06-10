@@ -97,7 +97,7 @@ class MidDecoder:
 
     def next(self):
         self.index += 1
-    
+
     def prev(self):
         self.index = max(0, self.index - 1)
 
@@ -182,7 +182,7 @@ class MidDecoder:
         if index is None:
             index = self.index
             self.next()
-        else:
+        elif self.sparse_coder.cfg.n_targets > 0:
             assert 0 <= index < self.sparse_coder.cfg.n_targets, "Index out of bounds."
         is_last = self.index >= self.sparse_coder.cfg.n_targets
 
@@ -551,10 +551,12 @@ class SparseCoder(nn.Module):
             cfg = SparseCoderConfig.from_dict(cfg_dict, drop_extra_fields=True)
 
         sae = SparseCoder(d_in, cfg, device=device, decoder=decoder, mesh=mesh)
-        sae.load_state(path, strict=decoder)
+        sae.load_state(path)
         return sae
 
-    def load_state(self, path: os.PathLike, strict: bool = True):
+    def load_state(self, path: os.PathLike, strict: bool = False):
+        current_state_dict = self.state_dict()
+
         filename = str(Path(path) / "sae.safetensors")
         barrier()
         if self.mesh is None:
@@ -565,46 +567,54 @@ class SparseCoder(nn.Module):
         else:
             state_dict = load_sharded(
                 filename,
-                self.state_dict(),
+                current_state_dict,
                 self.mesh,
             )
         if hasattr(self, "post_enc") and "post_enc" not in state_dict:
+            print("Imputing post_enc")
             state_dict["post_enc"] = self.post_enc.clone()
         if hasattr(self, "post_encs") and "post_encs" not in state_dict:
+            print("Imputing post_encs")
             for i, post_enc in enumerate(self.post_encs):
                 state_dict[f"post_encs.{i}"] = post_enc.clone()
         if hasattr(self, "post_enc_scale") and "post_enc_scale" not in state_dict:
+            print("Imputing post_enc_scale")
             state_dict["post_enc_scale"] = self.post_enc_scale.clone()
         if hasattr(self, "post_enc_scales"):
+            print("Imputing post_enc_scales")
             for i, post_enc_scale in enumerate(self.post_enc_scales):
                 if f"post_enc_scales.{i}" not in state_dict:
                     state_dict[f"post_enc_scales.{i}"] = post_enc_scale.clone()
         if hasattr(self, "W_decs") and "W_decs" not in state_dict:
+            print("Imputing W_decs")
             state_dict["W_decs.0"] = state_dict.pop("W_dec")
             for i, W_dec in enumerate(self.W_decs):
                 if i > 0:
                     state_dict[f"W_decs.{i}"] = W_dec.clone()
         if hasattr(self, "W_skips") and "W_skips" not in state_dict:
+            print("Imputing W_skips")
             state_dict["W_skips.0"] = state_dict.pop("W_skip")
             for i, W_skip in enumerate(self.W_skips):
                 if i > 0:
                     state_dict[f"W_skips.{i}"] = W_skip.clone()
         if hasattr(self, "b_decs") and "b_decs" not in state_dict:
+            print("Imputing b_decs")
             state_dict["b_decs.0"] = state_dict.pop("b_dec")
             for i, b_dec in enumerate(self.b_decs):
                 if i > 0:
                     state_dict[f"b_decs.{i}"] = b_dec.clone()
 
         items = list(state_dict.items())
-        current_keys = list(self.state_dict().keys())
+        current_keys = list(current_state_dict.keys())
         items.sort(key=lambda x: current_keys.index(x[0]))
-        state_dict = dict(items)
-
+        state_dict = dict()
+        for k, v in items:
+            state_dict[k] = v
         self.load_state_dict(state_dict, strict=strict)
+
         barrier()
 
     def save_to_disk(self, path: Path | str):
-        barrier()
         path = Path(path)
         if (
             not torch.distributed.is_initialized()
@@ -612,7 +622,10 @@ class SparseCoder(nn.Module):
             path.mkdir(parents=True, exist_ok=True)
 
         filename = str(path / "sae.safetensors")
-        if save_sharded(self.state_dict(), filename, mesh=self.mesh):
+        current_state_dict = self.state_dict()
+        is_main = save_sharded(current_state_dict, filename, mesh=self.mesh)
+
+        if is_main:
             with open(path / "cfg.json", "w") as f:
                 json.dump(
                     {
@@ -621,9 +634,7 @@ class SparseCoder(nn.Module):
                     },
                     f,
                 )
-        barrier()
 
-    @property
     def device(self):
         return self.encoder.weight.device
 
@@ -691,9 +702,7 @@ class SparseCoder(nn.Module):
 
         x = self.normalize_input(x)
 
-        mid_decoder = MidDecoder(
-            self, x, top_acts, top_indices, dead_mask, pre_acts
-        )
+        mid_decoder = MidDecoder(self, x, top_acts, top_indices, dead_mask, pre_acts)
         if self.multi_target or return_mid_decoder:
             return mid_decoder
         else:

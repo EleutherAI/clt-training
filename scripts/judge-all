@@ -2,3 +2,7 @@
 set -e
 scripts/judge-gpt bs8-lr3e-4-tied-ef128-k16
 scripts/judge-gpt bs8-lr2e-4-none-ef128-k16
+
+# for THRESHOLD in 0.2 0.4 0.6 0.8 0.9 0.95 0.98; do
+#     scripts/judge-gpt bs8-lr2e-4-tied-ef128-k16
+# done

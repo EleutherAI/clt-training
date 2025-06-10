@@ -494,6 +494,8 @@ class Trainer:
                 bos_mask_mesh = bos_mask_mesh.redistribute(
                     self.mesh, [Shard(0), Replicate()]
                 )
+            else:
+                bos_mask_mesh = bos_mask.flatten(0, 1)
 
             # On the first iteration, initialize the encoder and decoder biases
             raw = self.saes[name]
@@ -767,7 +769,7 @@ class Trainer:
             x = x.to(self.model.device)
         return x
 
-    def maybe_all_reduce(self, x: Tensor, op: str = "mean") -> Tensor:
+    def maybe_all_reduce(self, x: Tensor, op: str = "mean", axis: int = 0) -> Tensor:
         if not dist.is_initialized() or self.mesh is None:
             return x
 
@@ -782,7 +784,11 @@ class Trainer:
         dist.all_reduce(
             x,
             op=dist_op,
-            group=self.mesh.get_group("dp"),
+            group=(
+                self.mesh.get_group("dp")
+                if axis == 0
+                else (self.mesh.get_group("tp") if axis == 1 else None)
+            ),
         )
 
         if op == "mean":

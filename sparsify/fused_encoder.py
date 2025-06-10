@@ -3,7 +3,6 @@ from typing import Literal, NamedTuple
 import torch
 import torch.distributed.tensor as dtensor
 import torch.nn.functional as F
-from torch.distributed._functional_collectives import permute_tensor
 
 from .kernels import triton_sparse_transpose_dense_matmul
 from .utils import decoder_impl
@@ -62,52 +61,30 @@ class FusedEncoder(torch.autograd.Function):
                     (dtensor.Shard(0), dtensor.Replicate()),
                 )
             elif isinstance(preacts, dtensor.DTensor):
-                # TODO leo gao's ring topk
                 mesh = preacts.device_mesh
                 local_acts = preacts.to_local()
                 local_values, local_indices = local_acts.topk(k, dim=1, sorted=False)
                 local_indices += mesh.get_local_rank(1) * local_acts.shape[1]
-                tp_size = mesh.shape[1]
-                tp_group = mesh.get_group(1)
-                src_dst = [(i + 1) % tp_size for i in range(tp_size)]
-                result_values, result_indices = local_values, local_indices
-                local_values, local_indices = (
-                    local_values.T.flatten(),
-                    local_indices.T.flatten(),
-                )
-                for _ in range(tp_size):
-                    # TODO non-permute op
-                    next_local_values = permute_tensor(
-                        local_values,
-                        src_dst,
-                        tp_group,
-                    )
-                    next_local_indices = permute_tensor(
-                        local_indices, src_dst, tp_group
-                    )
-                    rotated_values = next_local_values.view(result_values.shape[::-1]).T
-                    rotated_indices = next_local_indices.view(
-                        result_indices.shape[::-1]
-                    ).T
-                    # TODO faster merge
-                    combined_values = torch.cat((result_values, rotated_values), dim=1)
-                    combined_indices = torch.cat(
-                        (result_indices, rotated_indices), dim=1
-                    )
-                    result_values, result_indices_ = combined_values.topk(
-                        k, dim=1, sorted=False
-                    )
-                    result_indices = torch.gather(combined_indices, 1, result_indices_)
-                    local_values = next_local_values
-                    local_indices = next_local_indices
-
                 values = dtensor.DTensor.from_local(
-                    result_values,
+                    local_values,
+                    mesh,
+                    (dtensor.Shard(0), dtensor.Shard(1)),
+                ).redistribute(mesh, (dtensor.Shard(0), dtensor.Replicate()))
+                indices = dtensor.DTensor.from_local(
+                    local_indices,
+                    mesh,
+                    (dtensor.Shard(0), dtensor.Shard(1)),
+                ).redistribute(mesh, (dtensor.Shard(0), dtensor.Replicate()))
+                local_values, local_indices = values.to_local(), indices.to_local()
+                local_values, local_indices_ = local_values.topk(k, dim=1, sorted=False)
+                local_indices = torch.gather(local_indices, 1, local_indices_)
+                values = dtensor.DTensor.from_local(
+                    local_values,
                     mesh,
                     (dtensor.Shard(0), dtensor.Replicate()),
                 )
                 indices = dtensor.DTensor.from_local(
-                    result_indices,
+                    local_indices,
                     mesh,
                     (dtensor.Shard(0), dtensor.Replicate()),
                 )

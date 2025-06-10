@@ -224,6 +224,21 @@ def save_sharded(
             torch.distributed.barrier()
             return False
     state_dict = non_tensor_state_dict | state_dict
+
+    # state_dict = {k: ((v.redistribute(
+    #     mesh,
+    #     (Replicate(), Replicate())
+    #     ).to_local().cpu()
+    #                   if isinstance(v, DTensor)
+    #                   else v.cpu())
+    #                   if isinstance(v, (torch.Tensor, DTensor))
+    #                   else v)
+    #               for k, v in start_state_dict.items()}
+
+    # if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+    #     torch.distributed.barrier()
+    #     return False
+
     if save_st:
         save_file(state_dict, filename)
     else:
@@ -342,6 +357,24 @@ def triton_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
     # )
 
 
+class AvgGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: Tensor, group: torch.distributed.ProcessGroup):
+        ctx.group = group
+        return torch.distributed.all_reduce(
+            x.clone(), op=torch.distributed.ReduceOp.AVG, group=group
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        # we use this for different output groups in the decoder, so we need to
+        # sum the gradients
+        grad_output = torch.distributed.all_reduce(
+            grad_output.clone(), op=torch.distributed.ReduceOp.SUM, group=ctx.group
+        )
+        return grad_output, None
+
+
 def parallelize_decoder(decoder):
     """
     Decorator to make the decoder function work on torch.DTensor.
@@ -364,6 +397,8 @@ def parallelize_decoder(decoder):
             assert top_indices.placements == top_acts.placements
             placement = {}
             local_acts = top_acts.to_local()
+            local_acts = AvgGrad.apply(local_acts, mesh.get_group("tp"))
+
             local_indices = top_indices.to_local()
             for i, p in enumerate(W_dec.placements):
                 if isinstance(p, Shard):
@@ -392,12 +427,6 @@ def parallelize_decoder(decoder):
                 result_local, top_indices.device_mesh, placement
             )
             return result
-
-            # # Use local_map to apply the decoder function on each local tensor
-            # return local_map(
-            #     decoder,
-            #     placement,
-            # )(top_indices, top_acts, W_dec)
         else:
             # If not a DTensor, call the decoder function directly
             return decoder(top_indices, top_acts, W_dec)

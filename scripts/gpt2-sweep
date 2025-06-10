@@ -5,7 +5,7 @@ PORT=$((PORT + 1000))
 
 BS=$1
 LR=$2
-NAME=bs$BS-lr$LR
+NAME=bs${BS}_lr$LR
 if [ -z "$3" ]; then
     CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
 else
@@ -19,34 +19,41 @@ else
         echo "Invalid option: $3"
         exit 1
     fi
-    NAME=$NAME-$3
+    NAME=${NAME}_$3
 fi
 if [ -z "$4" ]; then
     EF=128
 else
     EF=$4
 fi
-NAME=$NAME-ef$EF
+NAME=${NAME}_ef$EF
 if [ -z "$5" ]; then
     K=16
 else
     K=$5
 fi
-NAME=$NAME-k$K
+NAME=${NAME}_k$K
 
 SAVE_ARGS="--save_every 100000000000"
 if ! [ -z "$DO_SAVE" ]; then
-    echo "Saving now"
-    SAVE_ARGS=""
+    SAVE_ARGS="--save_every 100"
 fi
 
+N_DEVICES=2
+# N_DEVICES=1
+# WANDB_ENTITY=eleutherai uv run python -m sparsify \
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
 openai-community/gpt2 --ctx_len 128 --filter_bos=True \
 --transcode=True --skip_connection=True \
---batch_size=$BS --expansion_factor=$EF --tp=4 \
+--batch_size=$BS --expansion_factor=$EF --k=$K --tp=$N_DEVICES \
 --hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \
 --run_name gpt2-sweep/$NAME \
 $CROSSING \
 --post_encoder_scale=True --normalize_io=True \
---lr $LR --optimizer adam --lr_warmup_steps 50 \
-$SAVE_ARGS
+$SAVE_ARGS --lr $LR \
+--optimizer adam --lr_warmup_steps 50 \
+--resume
+# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8_lr3e-4_none_ef32_k32/ \
+# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8_lr2e-4_none_ef32_k32/ --save_every 10 \
+# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/
+# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8_lr2e-4-none_ef128_k32/
