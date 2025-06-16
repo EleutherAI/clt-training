@@ -11,6 +11,7 @@ keywords = ["interpretability", "explainable-ai"]
 license = {text = "MIT License"}
 dependencies = [
     "accelerate", # For device_map in from_pretrained
+    "bitsandbytes>=0.46.0",
     "datasets",
     "einops",
     "hf-xet>=1.1.0",
@@ -20,6 +21,7 @@ dependencies = [
     "schedulefree",
     "simple-parsing",
     "torch",
+    "torchao>=0.11.0",
     "transformers",
     "wandb>=0.19.11",
 ]

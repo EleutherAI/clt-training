@@ -398,9 +398,7 @@ def parallelize_decoder(decoder):
             assert top_indices.placements == top_acts.placements
             placement = {}
             local_acts = top_acts.to_local()
-            assert local_acts is not None, "local_acts is None (1)"
             local_acts = AvgGrad.apply(local_acts, mesh.get_group("tp"))
-            assert local_acts is not None, "local_acts is None (2)"
 
             local_indices = top_indices.to_local()
             for i, p in enumerate(W_dec.placements):

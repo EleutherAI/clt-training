@@ -354,7 +354,10 @@ class SparseCoder(nn.Module):
                             (num_latents, d_in),
                             dtype=dtype,
                             device_mesh=mesh,
-                            placements=[dtensor.Replicate(), dtensor.Shard(1)],
+                            placements=[
+                                dtensor.Replicate(),
+                                dtensor.Shard(1) if cfg.tp_output else dtensor.Shard(0),
+                            ],
                         )
                     else:
                         result = torch.zeros(
@@ -604,7 +607,7 @@ class SparseCoder(nn.Module):
                 if i > 0:
                     state_dict[f"b_decs.{i}"] = b_dec.clone()
 
-        items = list(state_dict.items())
+        items = [(k, v) for k, v in state_dict.items() if k in current_state_dict]
         current_keys = list(current_state_dict.keys())
         items.sort(key=lambda x: current_keys.index(x[0]))
         state_dict = dict()

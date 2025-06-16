@@ -14,7 +14,10 @@ else
     elif [ "$3" == "tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$3" == "cross" ]; then
-        CROSSING="--cross_layer=12"
+        # CROSSING="--cross_layer=12 --coalesce_topk=per-layer --topk_coalesced=False"
+        # CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False"
+        CROSSING="--cross_layer=12 --divide_cross_layer=True"
+        # CROSSING="--cross_layer=12"
     else
         echo "Invalid option: $3"
         exit 1
@@ -36,7 +39,7 @@ NAME=${NAME}-k$K
 
 SAVE_ARGS="--save_every 100000000000"
 if ! [ -z "$DO_SAVE" ]; then
-    SAVE_ARGS="--save_every 100"
+    SAVE_ARGS="--save_every 2000"
 fi
 
 N_DEVICES=4
@@ -52,8 +55,4 @@ $CROSSING \
 --post_encoder_scale=True --normalize_io=True \
 $SAVE_ARGS --lr $LR \
 --optimizer adam --lr_warmup_steps 50 \
---resume
-# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8_lr3e-4_none_ef32_k32/ \
-# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8_lr2e-4_none_ef32_k32/ --save_every 10 \
-# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/
-# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8_lr2e-4-none_ef128_k32/
+--finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/

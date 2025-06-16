@@ -35,6 +35,9 @@ class SparseCoderConfig(Serializable):
     transcode: bool = False
     """Whether we want to predict the output of a module given its input."""
 
+    tp_output: bool = True
+    """Whether to shard across the output dimension for the decoder."""
+
     n_targets: int = 0
     """Number of targets to predict. Only used if `transcode` is True."""
 
@@ -97,7 +100,7 @@ class TrainConfig(Serializable):
     remove_transcoded_modules: bool = False
     """Don't run modules that are replaced for transcoders with CE loss."""
 
-    optimizer: Literal["adam", "muon", "signum"] = "signum"
+    optimizer: Literal["adam", "adam8", "muon", "signum"] = "signum"
     """Optimizer to use."""
 
     lr: float | None = None
@@ -113,7 +116,7 @@ class TrainConfig(Serializable):
     k_decay_steps: int = 0
     """Number of steps over which to decay the number of active latents. Starts at
     input width * 10 and decays to k. Experimental feature."""
-    
+
     k_anneal_mul: int = 10
     """How much to increase k by for k-annealing."""
 

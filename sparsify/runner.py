@@ -108,6 +108,7 @@ class CrossLayerRunner(object):
                 if advance:
                     del mid_out.x
             elif mid_out.sparse_coder.cfg.coalesce_topk == "per-layer":
+                output = 0
                 for i, layer_mid in enumerate(layer_mids):
                     hookpoint = hookpoints[i]
                     is_ours = hookpoint == module_name
@@ -181,7 +182,9 @@ class CrossLayerRunner(object):
         decoder_kwargs: dict = {},
     ):
         mid_out = self.encode(x, sparse_coder, dead_mask=dead_mask, **encoder_kwargs)
-        return self.decode(mid_out, y, module_name, detach_grad, loss_mask=loss_mask, **decoder_kwargs)
+        return self.decode(
+            mid_out, y, module_name, detach_grad, loss_mask=loss_mask, **decoder_kwargs
+        )
 
     def restore(self):
         for restorable, was_last in self.to_restore.values():

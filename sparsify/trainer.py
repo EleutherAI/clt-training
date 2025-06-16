@@ -41,6 +41,22 @@ from .utils import (
 ScheduleFreeWrapperType = (ScheduleFreeWrapper, ScheduleFreeWrapperReference)
 
 
+class WarmupLinearSchedule(torch.optim.lr_scheduler.LambdaLR):
+    def __init__(self, optimizer, warmup_steps, num_training_steps):
+        self.warmup_steps = warmup_steps
+        self.num_training_steps = num_training_steps
+        super().__init__(optimizer, self.lr_lambda, last_epoch=-1)
+
+    def lr_lambda(self, current_step):
+        if current_step < self.warmup_steps:
+            return float(current_step) / float(max(1, self.warmup_steps))
+        return max(
+            0.0,
+            float(self.num_training_steps - current_step)
+            / float(max(1, self.num_training_steps - self.warmup_steps)),
+        )
+
+
 class Trainer:
     def __init__(
         self,
@@ -130,35 +146,40 @@ class Trainer:
         barrier()
 
         match cfg.optimizer:
-            case "adam":
-                try:
-                    from bitsandbytes.optim import Adam8bit as Adam
+            case "adam" | "adam8":
+                from torch.optim import Adam
 
-                    print("Using 8-bit Adam from bitsandbytes")
-                except ImportError:
-                    from torch.optim import Adam
+                if cfg.optimizer == "adam8":
+                    try:
+                        # from bitsandbytes.optim import Adam8bit as Adam
+                        from torchao.optim import AdamW8bit as Adam
 
-                    print(
-                        "bitsandbytes 8-bit Adam not available, using torch.optim.Adam"
-                    )
-                    print("Run `pip install bitsandbytes` for less memory usage.")
+                        print("Using 8-bit Adam from torchao")
+                    except ImportError:
+                        print(
+                            "torchao 8-bit Adam not available, using torch.optim.Adam"
+                        )
+                        print("Run `pip install bitsandbytes` for less memory usage.")
 
                 pgs = [
                     dict(
                         params=sae.parameters(),
-                        lr=cfg.lr or 2e-4 / (sae.num_latents / (2**14)) ** 0.5,
+                        lr=torch.tensor(
+                            cfg.lr or 2e-4 / (sae.num_latents / (2**14)) ** 0.5
+                        ),
                     )
                     for sae in self.saes.values()
                 ]
                 # For logging purposes
-                lrs = [f"{lr:.2e}" for lr in sorted(set(pg["lr"] for pg in pgs))]
+                lrs = [f"{lr:.2e}" for lr in sorted(set(float(pg["lr"]) for pg in pgs))]
 
                 adam = Adam(pgs)
                 self.optimizers = [adam]
                 self.lr_schedulers = [
-                    get_linear_schedule_with_warmup(
-                        adam, cfg.lr_warmup_steps, num_batches
-                    )
+                    WarmupLinearSchedule(adam, cfg.lr_warmup_steps, num_batches)
+                    # get_linear_schedule_with_warmup(
+                    #     adam, cfg.lr_warmup_steps, num_batches
+                    # )
                 ]
             case "muon":
                 params = [
