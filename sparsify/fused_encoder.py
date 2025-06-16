@@ -31,7 +31,7 @@ class FusedEncoder(torch.autograd.Function):
         weight,
         bias,
         k: int,
-        activation: Literal["groupmax", "topk"],
+        activation: Literal["groupmax", "topk", "batchtopk"],
     ):
         """
         input:  (N, D)
@@ -40,6 +40,22 @@ class FusedEncoder(torch.autograd.Function):
         k:      int (number of top elements to select along dim=1)
         """
         preacts = F.relu(F.linear(input, weight, bias))
+
+        if activation == "batchtopk":
+            expected_k = k * preacts.shape[0]
+            if isinstance(preacts, dtensor.DTensor):
+                local_preacts = preacts.to_local()
+                local_threshold = torch.topk(
+                    local_preacts.flatten(), expected_k, sorted=False
+                ).values[-1]
+                local_preacts[local_preacts < local_threshold] = 0
+            else:
+                threshold = torch.topk(
+                    preacts.flatten(), expected_k, sorted=False
+                ).values[-1]
+                preacts[preacts < threshold] = 0
+            k *= 4
+            activation = "topk"
 
         # Get top-k values and indices for each row
         if activation == "topk":

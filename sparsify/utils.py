@@ -381,7 +381,7 @@ def parallelize_decoder(decoder):
     Decorator to make the decoder function work on torch.DTensor.
     """
 
-    @torch.compile
+    # @torch.compile
     def wrapper(
         top_indices: Tensor | DTensor,
         top_acts: Tensor | DTensor,
@@ -398,7 +398,7 @@ def parallelize_decoder(decoder):
             assert top_indices.placements == top_acts.placements
             placement = {}
             local_acts = top_acts.to_local()
-            local_acts = AvgGrad.apply(local_acts, mesh.get_group("tp"))
+            local_acts = AvgGrad.apply(local_acts, mesh.get_group(1))
 
             local_indices = top_indices.to_local()
             for i, p in enumerate(W_dec.placements):

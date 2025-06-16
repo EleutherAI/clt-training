@@ -17,10 +17,11 @@ dependencies = [
     "hf-xet>=1.1.0",
     "huggingface-hub",
     "natsort", # For sorting module names
+    "pre-commit>=4.2.0",
     "safetensors",
     "schedulefree",
     "simple-parsing",
-    "torch",
+    "torch==2.6.0",
     "torchao>=0.11.0",
     "transformers",
     "wandb>=0.19.11",
@@ -36,7 +37,7 @@ sparsify = "sparsify.__main__:run"
 
 [[tool.uv.index]]
 name = "pytorch"
-url = "https://download.pytorch.org/whl/cu128"
+url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 [tool.uv]
 prerelease = "allow"

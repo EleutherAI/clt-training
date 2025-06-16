@@ -11,6 +11,10 @@ if [ -z "$3" ]; then
 else
     if [ "$3" == "none" ]; then
         CROSSING=""
+    elif [ "$3" == "btopk" ]; then
+        CROSSING="--activation=batchtopk"
+    elif [ "$3" == "btopk-tied" ]; then
+        CROSSING="--activation=batchtopk --cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$3" == "tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$3" == "cross" ]; then
@@ -55,4 +59,4 @@ $CROSSING \
 --post_encoder_scale=True --normalize_io=True \
 $SAVE_ARGS --lr $LR \
 --optimizer adam --lr_warmup_steps 50 \
---finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/
+# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/
