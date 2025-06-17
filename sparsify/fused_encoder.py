@@ -44,11 +44,24 @@ class FusedEncoder(torch.autograd.Function):
         if activation == "batchtopk":
             expected_k = k * preacts.shape[0]
             if isinstance(preacts, dtensor.DTensor):
+                mesh = preacts.device_mesh
                 local_preacts = preacts.to_local()
-                local_threshold = torch.topk(
+                local_values = torch.topk(
                     local_preacts.flatten(), expected_k, sorted=False
-                ).values[-1]
-                local_preacts[local_preacts < local_threshold] = 0
+                ).values
+                all_values = dtensor.DTensor.from_local(
+                    local_values,
+                    mesh,
+                    (dtensor.Shard(0), dtensor.Shard(0)),
+                )
+                all_values = all_values.redistribute(
+                    mesh, (dtensor.Shard(0), dtensor.Replicate())
+                )
+                combined_values = all_values.to_local()
+                threshold = torch.topk(
+                    combined_values, expected_k, sorted=False
+                ).values.min()
+                local_preacts[local_preacts < threshold] = 0
             else:
                 threshold = torch.topk(
                     preacts.flatten(), expected_k, sorted=False
