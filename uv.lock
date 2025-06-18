@@ -353,6 +353,7 @@ dependencies = [
     { name = "torchao" },
     { name = "transformers" },
     { name = "wandb" },
+    { name = "wandb-workspaces" },
 ]
 
 [package.optional-dependencies]
@@ -378,6 +379,7 @@ requires-dist = [
     { name = "torchao", specifier = ">=0.11.0" },
     { name = "transformers" },
     { name = "wandb", specifier = ">=0.19.11" },
+    { name = "wandb-workspaces", specifier = ">=0.1.16" },
 ]
 provides-extras = ["dev"]
 
@@ -2003,6 +2005,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/26/32/23890a726302e7be28bda9fff47ce9b491af64e339aba4d32b3b8d1a7aaf/wandb-0.20.1-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:29ea495e49393db860f17437fe37e48018da90436ce10949b471780f09293bd7", size = 23237996, upload-time = "2025-06-05T00:00:16.647Z" },
     { url = "https://files.pythonhosted.org/packages/af/94/296e520b086b2a4f10e99bcea3cd5856421b9c004824663501e3789a713b/wandb-0.20.1-py3-none-win32.whl", hash = "sha256:455ee0a652e59ab1e4b546fa1dc833dd3063aa7e64eb8abf95d22f0e9f08c574", size = 22518456, upload-time = "2025-06-05T00:00:19.006Z" },
     { url = "https://files.pythonhosted.org/packages/52/5f/c44ad7b2a062ca5f4da99ae475cea274c38f6ec37bdaca1b1c653ee87274/wandb-0.20.1-py3-none-win_amd64.whl", hash = "sha256:6d2431652f096b7e394c29a99135a6441c02ed3198b963f0b351a5b5e56aeca0", size = 22518459, upload-time = "2025-06-05T00:00:21.374Z" },
+]
+
+[[package]]
+name = "wandb-workspaces"
+version = "0.1.16"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "wandb" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ce/96/30277fc7bb53fe48fb95fe10f3ab9a8009e98fa53c111ceeccf837717dbb/wandb_workspaces-0.1.16.tar.gz", hash = "sha256:baccc857c7b20c325a8d4ead15d8846b55d840fe4de1735fb68bd0326f4caf3a", size = 75812, upload-time = "2025-06-17T15:02:06.962Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5a/25/35a2321f638dad059ec5e5c1d0132d54153fcf8949ff1323f726244c0407/wandb_workspaces-0.1.16-py3-none-any.whl", hash = "sha256:f3ae1030f9157588619064bb9da0f8af0cd85a68fc60bb4679a21191ce9586ff", size = 86291, upload-time = "2025-06-17T15:02:05.449Z" },
 ]
 
 [[package]]

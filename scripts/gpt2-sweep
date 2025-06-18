@@ -41,9 +41,19 @@ else
 fi
 NAME=${NAME}-k$K
 
+if [ -z "$OPTIMIZER" ]; then
+    OPTIMIZER="adam"
+else
+    NAME=${NAME}-${OPTIMIZER}
+fi
+
 SAVE_ARGS="--save_every 100000000000"
 if ! [ -z "$DO_SAVE" ]; then
-    SAVE_ARGS="--save_every 2000"
+    if [ "$DO_SAVE" == "1" ]; then
+        SAVE_ARGS="--save_every 2000"
+    else
+        SAVE_ARGS="--save_every $DO_SAVE"
+    fi
 fi
 
 N_DEVICES=4
@@ -58,5 +68,6 @@ openai-community/gpt2 --ctx_len 128 --filter_bos=True \
 $CROSSING \
 --post_encoder_scale=True --normalize_io=True \
 $SAVE_ARGS --lr $LR \
---optimizer adam --lr_warmup_steps 50 \
+--optimizer $OPTIMIZER --lr_warmup_steps 50 \
+# --resume
 # --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/

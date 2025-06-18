@@ -15,6 +15,16 @@ from torch.distributed.tensor import (
 from torch.distributed.tensor.device_mesh import DeviceMesh
 from transformers import PreTrainedModel
 
+try:
+    from torchao.optim.subclass_8bit import OptimState8bit
+except ImportError:
+    OptimState8bit = object
+
+    # dummy class for when torchao is not installed
+    class OptimState8bit(object):  # noqa
+        pass
+
+
 T = TypeVar("T")
 
 
@@ -142,6 +152,33 @@ def flatten_dict(d):
             for k2, v2 in flatten_dict(v).items():
                 combined[(k,) + k2] = v2
         return combined
+    elif isinstance(d, OptimState8bit) or (
+        isinstance(d, DTensor) and isinstance(d.to_local(), OptimState8bit)
+    ):
+        key_base = "int8state"
+        tensor = d
+        if isinstance(d, DTensor):
+            tensor = tensor.to_local()
+        attrs, ctx = tensor.__tensor_flatten__()
+        attributes = {}
+        for k in attrs:
+            v = getattr(tensor, k)
+            if isinstance(v, torch.Tensor) and isinstance(d, DTensor):
+                if k == "qmap":
+                    attributes[k] = DTensor.from_local(
+                        v, d.device_mesh, (Replicate(), Replicate())
+                    )
+                    continue
+                placements = d.placements
+                if k == "scale" and isinstance(placements[1], Shard):
+                    placements = (Replicate(), Shard(0))
+                attributes[k] = DTensor.from_local(v, d.device_mesh, placements)
+        combined = {}
+        for k, v in flatten_dict(ctx).items():
+            combined[((key_base, "ctx"),) + k] = v
+        for k, v in flatten_dict(attributes).items():
+            combined[((key_base, "attrs"),) + k] = v
+        return combined
     else:
         return {(): d}
 
@@ -155,12 +192,36 @@ def unflatten_dict(d, path_here=()):
     for k, v in d.items():
         by_first_key[k[0]][k[1:]] = v
     first_first_key = next(iter(by_first_key.keys()))
-    if (
-        isinstance(first_first_key, tuple)
-        and len(first_first_key) == 2
-        and first_first_key[0] == "list"
-    ):
-        return [unflatten_dict(by_first_key[k]) for k in sorted(by_first_key.keys())]
+    if isinstance(first_first_key, tuple) and len(first_first_key) == 2:
+        if first_first_key[0] == "list":
+            return [
+                unflatten_dict(by_first_key[k]) for k in sorted(by_first_key.keys())
+            ]
+        elif first_first_key[0] == "int8state":
+            attrs_flat, ctx_flat = (
+                by_first_key[("int8state", "attrs")],
+                by_first_key[("int8state", "ctx")],
+            )
+            placements = None
+            if any(isinstance(v, DTensor) for v in attrs_flat.values()):
+                placements = attrs_flat[("codes",)].placements
+                device_mesh = attrs_flat[("codes",)].device_mesh
+                new_attrs_flat = {}
+                for k, v in attrs_flat.items():
+                    if isinstance(v, DTensor):
+                        new_attrs_flat[k] = v.to_local()
+                    else:
+                        new_attrs_flat[k] = v
+                attrs_flat = new_attrs_flat
+            attrs = unflatten_dict(attrs_flat)
+            ctx = unflatten_dict(ctx_flat)
+            tensor = OptimState8bit.__tensor_unflatten__(attrs, ctx)
+            if placements is not None:
+                return DTensor.from_local(tensor, device_mesh, placements)
+            else:
+                return tensor
+        else:
+            raise ValueError()
     else:
         return {k: unflatten_dict(v, path_here + (k,)) for k, v in by_first_key.items()}
 
