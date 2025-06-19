@@ -545,7 +545,7 @@ class SparseCoder(nn.Module):
             repo_path = repo_path / hookpoint
 
         # No layer specified, and there are multiple layers
-        elif not repo_path.joinpath("cfg.json").exists():
+        elif not repo_path.joinpath("config.json").exists():
             raise FileNotFoundError("No config file found; try specifying a layer.")
 
         return SparseCoder.load_from_disk(repo_path, device=device, decoder=decoder)
@@ -560,7 +560,7 @@ class SparseCoder(nn.Module):
     ) -> "SparseCoder":
         path = Path(path)
 
-        with open(path / "cfg.json", "r") as f:
+        with open(path / "config.json", "r") as f:
             cfg_dict = json.load(f)
             d_in = cfg_dict.pop("d_in")
             cfg = SparseCoderConfig.from_dict(cfg_dict, drop_extra_fields=True)
@@ -641,7 +641,7 @@ class SparseCoder(nn.Module):
         is_main = save_sharded(current_state_dict, filename, mesh=self.mesh)
 
         if is_main:
-            with open(path / "cfg.json", "w") as f:
+            with open(path / "config.json", "w") as f:
                 json.dump(
                     {
                         **self.cfg.to_dict(),
