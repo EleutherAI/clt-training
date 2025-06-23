@@ -220,9 +220,14 @@ class Trainer:
                 ]
                 lrs = [f"{lr:.2e}" for lr in sorted(set(pg["lr"] for pg in pgs))]
 
+                if self.mesh is not None:
+                    ScheduleFreeWrapperType = ScheduleFreeWrapperReference
+                else:
+                    ScheduleFreeWrapperType = ScheduleFreeWrapper
+
                 opt = SignSGD(pgs)
                 if not cfg.force_lr_warmup:
-                    opt = ScheduleFreeWrapper(opt, momentum=0.95)
+                    opt = ScheduleFreeWrapperType(opt, momentum=0.95)
                     opt.train()
 
                 self.optimizers = [opt]

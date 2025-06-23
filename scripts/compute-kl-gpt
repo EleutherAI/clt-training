@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -e
+
+MODEL_NAME=gpt2
+CHECKPOINT_PATH=$PWD/checkpoints/gpt2-sweep
+NAME=$1
+
+SAVE_DIR=$PWD/results/gpt2-eval-kl/$NAME
+mkdir -p $SAVE_DIR
+cd ../attribution_graph
+uv run python experiments/evaluate.py --model $MODEL_NAME --transcoder_path $CHECKPOINT_PATH/$NAME ${@:2}
+cp results/accuracy/eval_results_$MODEL_NAME-*_$NAME.json $SAVE_DIR/eval_results.json
