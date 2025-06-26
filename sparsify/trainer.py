@@ -21,6 +21,7 @@ from transformers import PreTrainedModel, get_linear_schedule_with_warmup
 
 from .config import TrainConfig
 from .data import MemmapDataset
+from .kernels import dense_dense_cooout_matmul
 
 # from .nanogpt import Muon
 from .muon import Muon
@@ -202,6 +203,7 @@ class Trainer:
                     torch.optim.Adam(
                         [param for param in params if param not in muon_param_set],
                         lr=cfg.lr or 2e-3,
+                        betas=(cfg.beta1, cfg.beta2),
                     ),
                 ]
                 self.lr_schedulers = [
@@ -437,6 +439,7 @@ class Trainer:
 
         # For logging purposes
         avg_auxk_loss = defaultdict(float)
+        avg_feature_link_l1 = defaultdict(float)
         avg_fvu = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
         avg_ce = 0.0
@@ -634,6 +637,46 @@ class Trainer:
                 avg_fvu[name] += float(out.fvu.detach() / denom)
                 if self.cfg.auxk_alpha > 0:
                     avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
+                feature_link_l1 = 0.0
+                prev_modules = [mod for mod in runner.outputs.keys() if mod != name]
+                prev_modules = [self.saes[mod] for mod in prev_modules]
+                for prev_module in prev_modules:
+                    dec_prev = prev_module.W_dec
+                    enc_curr = raw.encoder.weight
+                    if isinstance(dec_prev, DTensor):
+                        dec_prev = dec_prev.to_local()
+                    if isinstance(enc_curr, DTensor):
+                        enc_curr = enc_curr.to_local()
+                    device = enc_curr.device
+                    neuron1_indices = torch.randint(
+                        0, len(dec_prev), (self.cfg.feature_link_batch,), device=device
+                    )
+                    neuron2_indices = torch.randint(
+                        0, len(enc_curr), (self.cfg.feature_link_batch,), device=device
+                    )
+                    products_enc1 = dense_dense_cooout_matmul(
+                        dec_prev,
+                        enc_curr.mT,
+                        torch.stack([neuron1_indices, neuron2_indices]),
+                    ).float()
+                    dec1_norms = dec_prev.norm(dim=1)
+                    enc2_norms = enc_curr.norm(dim=1)
+                    feature_link_l1 += torch.abs(
+                        products_enc1
+                        / (
+                            dec1_norms[neuron1_indices] * enc2_norms[neuron2_indices]
+                        ).clamp(min=1e-6)
+                    ).mean() / len(prev_modules)
+                if isinstance(feature_link_l1, Tensor):
+                    feature_link_l1 = self.maybe_all_reduce(
+                        feature_link_l1, "mean", axis=None
+                    )
+                    feature_link_l1 = DTensor.from_local(
+                        feature_link_l1, self.mesh, [Replicate(), Replicate()]
+                    )
+
+                if self.cfg.feature_link_l1 > 0 and isinstance(feature_link_l1, Tensor):
+                    avg_feature_link_l1[name] += float(feature_link_l1.detach() / denom)
                 if self.cfg.sae.multi_topk:
                     avg_multi_topk_fvu[name] += float(
                         out.multi_topk_fvu.detach() / denom
@@ -642,6 +685,7 @@ class Trainer:
                     out.fvu
                     + self.cfg.auxk_alpha * out.auxk_loss
                     + out.multi_topk_fvu / 8
+                    + self.cfg.feature_link_l1 * feature_link_l1
                 )
 
                 # Do a "local" backward pass if we're not training end-to-end
@@ -764,6 +808,8 @@ class Trainer:
 
                         if self.cfg.auxk_alpha > 0:
                             info[f"auxk/{name}"] = avg_auxk_loss[name]
+                        if self.cfg.feature_link_l1 > 0:
+                            info[f"feature_link_l1/{name}"] = avg_feature_link_l1[name]
                         if self.cfg.sae.multi_topk:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
@@ -776,6 +822,7 @@ class Trainer:
                 avg_auxk_loss.clear()
                 avg_fvu.clear()
                 avg_multi_topk_fvu.clear()
+                avg_feature_link_l1.clear()
                 avg_ce = 0.0
                 avg_kl = 0.0
 

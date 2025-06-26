@@ -67,6 +67,9 @@ class SparseCoderConfig(Serializable):
     def do_coalesce_topk(self):
         return self.coalesce_topk != "none"
 
+    use_fp8: bool = False
+    """Use FP8 for the sparse coder."""
+
 
 # Support different naming conventions for the same configuration
 SaeConfig = SparseCoderConfig
@@ -110,6 +113,12 @@ class TrainConfig(Serializable):
     """Number of steps over which to warm up the learning rate. Only used if
     `optimizer` is `adam`."""
 
+    b1: float = 0.9
+    """Beta1 for Adam."""
+
+    b2: float = 0.999
+    """Beta2 for Adam."""
+
     force_lr_warmup: bool = False
     """Force the learning rate warmup even if `optimizer` is not `adam`."""
 
@@ -125,6 +134,12 @@ class TrainConfig(Serializable):
 
     dead_feature_threshold: int = 10_000_000
     """Number of tokens after which a feature is considered dead."""
+
+    feature_link_l1: float = 0.0
+    """L1 regularization for pairs of random features in nodes."""
+
+    feature_link_batch: int = 4096
+    """Batch size for feature link L1 regularization."""
 
     hookpoints: list[str] = list_field()
     """List of hookpoints to train sparse coders on."""

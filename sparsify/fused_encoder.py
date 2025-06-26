@@ -5,6 +5,7 @@ import torch.distributed.tensor as dtensor
 import torch.nn.functional as F
 
 from .kernels import triton_sparse_transpose_dense_matmul
+from .nanogpt import linear
 from .utils import decoder_impl
 
 
@@ -32,6 +33,7 @@ class FusedEncoder(torch.autograd.Function):
         bias,
         k: int,
         activation: Literal["groupmax", "topk", "batchtopk"],
+        use_fp8: bool = False,
     ):
         """
         input:  (N, D)
@@ -39,7 +41,7 @@ class FusedEncoder(torch.autograd.Function):
         bias:   (M,)
         k:      int (number of top elements to select along dim=1)
         """
-        preacts = F.relu(F.linear(input, weight, bias))
+        preacts = F.relu(linear(input, weight, bias, use_fp8))
 
         if activation == "batchtopk":
             expected_k = k * preacts.shape[0]
@@ -281,7 +283,7 @@ class FusedEncoder(torch.autograd.Function):
                 )
 
         # The k parameter is an int, so return None for its gradient.
-        return grad_input, grad_weight, grad_bias, None, None
+        return grad_input, grad_weight, grad_bias, None, None, None
 
 
 def fused_encoder(
@@ -290,11 +292,12 @@ def fused_encoder(
     bias,
     k: int,
     activation: Literal["groupmax", "topk"],
+    use_fp8: bool = False,
 ) -> EncoderOutput:
     """
     Convenience wrapper that performs an nn.Linear followed by `activation` with
     a backward pass optimized using index_add.
     """
     return EncoderOutput(
-        *FusedEncoder.apply(input, weight, bias, k, activation)  # type: ignore
+        *FusedEncoder.apply(input, weight, bias, k, activation, use_fp8)  # type: ignore
     )

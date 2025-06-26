@@ -7,7 +7,7 @@ openai-community/gpt2 --ctx_len 128 \
 --transcode=True --skip_connection=True \
 --batch_size=8 --expansion_factor=128 --tp=3 \
 --hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \
---run_name clt-gpt2-finetune/$1 ${@:2} \
+--run_name clt-gpt2-finetune/$1 --finetune checkpoints/gpt2-sweep/$1 ${@:2} \
 --cross_layer=12 \
 --coalesce_topk=concat --topk_coalesced=False --post_encoder_scale=True --normalize_io=True \
 --lr 1e-4 --optimizer adam --lr_warmup_steps 50 \

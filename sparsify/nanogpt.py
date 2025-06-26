@@ -5,7 +5,7 @@
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from torch import Tensor, nn
+from torch import Tensor
 from torch.distributed.tensor import DTensor
 
 # Custom operators: FP8 matmul by @YouJiacheng
@@ -261,36 +261,50 @@ def norm(x: Tensor):
     return F.rms_norm(x, (x.size(-1),))
 
 
-class CastedLinear(nn.Linear):
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        use_fp8=False,
-        x_s=1.0,
-        w_s=1.0,
-        grad_s=1.0,
-    ):
-        super().__init__(in_features, out_features, bias=False)
-        self.use_fp8 = use_fp8
-        self.x_s = x_s
-        self.w_s = w_s
-        self.grad_s = grad_s
+# class CastedLinear(nn.Linear):
+#     def __init__(
+#         self,
+#         in_features: int,
+#         out_features: int,
+#         use_fp8=False,
+#         x_s=1.0,
+#         w_s=1.0,
+#         grad_s=1.0,
+#         use_bias=False,
+#     ):
+#         super().__init__(in_features, out_features, bias=use_bias)
+#         self.use_fp8 = use_fp8
+#         self.x_s = x_s
+#         self.w_s = w_s
+#         self.grad_s = grad_s
 
-    def reset_parameters(self) -> None:
-        std = 0.5 * (
-            self.in_features**-0.5
-        )  # 0.5 is a bit better than the default 1/sqrt(3)
-        bound = (3**0.5) * std
-        with torch.no_grad():
-            self.weight.uniform_(-bound, bound)
+#     def reset_parameters(self) -> None:
+#         std = 0.5 * (
+#             self.in_features**-0.5
+#         )  # 0.5 is a bit better than the default 1/sqrt(3)
+#         bound = (3**0.5) * std
+#         with torch.no_grad():
+#             self.weight.uniform_(-bound, bound)
 
-    def forward(self, x: Tensor):
-        if self.use_fp8 and self.training:
-            _x = x.flatten(0, -2)
-            out: Tensor = torch.ops.nanogpt.mm(
-                _x, self.weight, x_s=self.x_s, w_s=self.w_s, grad_s=self.grad_s
-            )[0]
-            return out.reshape(*x.shape[:-1], -1)
-        else:
-            return F.linear(x, self.weight.type_as(x))
+#     def forward(self, x: Tensor):
+#         if self.use_fp8 and self.training:
+#             _x = x.flatten(0, -2)
+#             out: Tensor = torch.ops.nanogpt.mm(
+#                 _x, self.weight, x_s=self.x_s, w_s=self.w_s, grad_s=self.grad_s
+#             )[0]
+#             return out.reshape(*x.shape[:-1], -1)
+#         else:
+#             return F.linear(x, self.weight.type_as(x))
+
+
+def linear(
+    x: Tensor, weight: Tensor, bias: Tensor | None = None, use_fp8: bool = False
+):
+    if use_fp8 and x.dtype == torch.bfloat16:
+        _x = x.flatten(0, -2)
+        out: Tensor = torch.ops.nanogpt.mm(_x, weight, x_s=1.0, w_s=1.0, grad_s=1.0)[0]
+        if bias is not None:
+            out += bias
+        return out.reshape(*x.shape[:-1], -1)
+    else:
+        return F.linear(x, weight, bias)

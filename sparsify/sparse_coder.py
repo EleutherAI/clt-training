@@ -670,6 +670,7 @@ class SparseCoder(nn.Module):
             self.encoder.bias,
             self.cfg.k,
             self.cfg.activation,
+            self.cfg.use_fp8,
         )
 
     def decode(
