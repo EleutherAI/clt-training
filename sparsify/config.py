@@ -17,6 +17,12 @@ class SparseCoderConfig(Serializable):
     expansion_factor: int = 32
     """Multiple of the input dimension to use as the sparse coder dimension."""
 
+    mxd_expansion_factor: int = 4
+    """Multiple of the input dimension to use as the MXD dimension."""
+
+    mxd_encoder_activation: Literal["none", "relu", "swish"] = "none"
+    """Activation function to use for the MXD encoder."""
+
     normalize_decoder: bool = True
     """Normalize the decoder weights to have unit norm."""
 
@@ -31,6 +37,9 @@ class SparseCoderConfig(Serializable):
 
     skip_connection: bool = False
     """Include a linear skip connection."""
+
+    mxd: bool = False
+    """Multiply skip connection instead of adding it."""
 
     transcode: bool = False
     """Whether we want to predict the output of a module given its input."""

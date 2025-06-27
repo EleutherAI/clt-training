@@ -48,17 +48,22 @@ class SparseCoder(nn.Module):
         self.cfg = cfg
         self.d_in = d_in
         self.num_latents = cfg.num_latents or d_in * cfg.expansion_factor
+        mxd_dim = d_in * cfg.mxd_expansion_factor
 
         self.encoder = nn.Linear(d_in, self.num_latents, device=device, dtype=dtype)
         self.encoder.bias.data.zero_()
 
         if decoder:
             # Transcoder initialization: use zeros
+            n_out = d_in if not cfg.mxd else mxd_dim
             if cfg.transcode:
-                self.W_dec = nn.Parameter(torch.zeros_like(self.encoder.weight.data))
+                self.W_dec = nn.Parameter(
+                    torch.randn(self.num_latents, n_out, device=device, dtype=dtype)
+                )
 
             # Sparse autoencoder initialization: use the transpose of encoder weights
             else:
+                assert not cfg.mxd, "MXD is not supported for non-transcoders"
                 self.W_dec = nn.Parameter(self.encoder.weight.data.clone())
                 if self.cfg.normalize_decoder:
                     self.set_decoder_norm_to_unit_norm()
@@ -71,6 +76,25 @@ class SparseCoder(nn.Module):
             if cfg.skip_connection
             else None
         )
+
+        if not cfg.mxd:
+            self.W_mxd_in = None
+            self.W_mxd_out = None
+            self.b_mxd_enc = None
+            self.b_mxd_dec = None
+        else:
+            self.W_mxd_in = nn.Parameter(
+                torch.randn(mxd_dim, d_in, device=device, dtype=dtype) / (d_in**0.5)
+            )
+            self.W_mxd_out = nn.Parameter(
+                torch.randn(d_in, mxd_dim, device=device, dtype=dtype) / (mxd_dim**0.5)
+            )
+            self.b_mxd_enc = nn.Parameter(
+                torch.zeros(mxd_dim, device=device, dtype=dtype)
+            )
+            self.b_mxd_dec = nn.Parameter(
+                torch.zeros(mxd_dim, device=device, dtype=dtype)
+            )
 
     @staticmethod
     def load_many(
@@ -189,7 +213,10 @@ class SparseCoder(nn.Module):
         assert self.W_dec is not None, "Decoder weight was not initialized."
 
         y = decoder_impl(top_indices, top_acts.to(self.dtype), self.W_dec.mT)
-        return y + self.b_dec
+        if self.cfg.mxd:
+            return y + self.b_mxd_dec
+        else:
+            return y + self.b_dec
 
     # Wrapping the forward in bf16 autocast improves performance by almost 2x
     @torch.autocast(
@@ -208,6 +235,17 @@ class SparseCoder(nn.Module):
 
         # Decode
         sae_out = self.decode(top_acts, top_indices)
+
+        if self.cfg.mxd:
+            mxd_encoded = x.to(self.dtype) @ self.W_mxd_in.T + self.b_mxd_enc
+            if self.cfg.mxd_encoder_activation == "swish":
+                mxd_encoded = mxd_encoded.sigmoid() * mxd_encoded
+            elif self.cfg.mxd_encoder_activation == "relu":
+                mxd_encoded = mxd_encoded.relu()
+            else:
+                assert self.cfg.mxd_encoder_activation == "none"
+            sae_out = (sae_out * mxd_encoded) @ self.W_mxd_out.T + self.b_dec
+
         if self.W_skip is not None:
             sae_out += x.to(self.dtype) @ self.W_skip.mT
 
