@@ -637,46 +637,57 @@ class Trainer:
                 avg_fvu[name] += float(out.fvu.detach() / denom)
                 if self.cfg.auxk_alpha > 0:
                     avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
+
                 feature_link_l1 = 0.0
                 prev_modules = [mod for mod in runner.outputs.keys() if mod != name]
                 prev_modules = [self.saes[mod] for mod in prev_modules]
-                for prev_module in prev_modules:
-                    dec_prev = prev_module.W_dec
-                    enc_curr = raw.encoder.weight
-                    if isinstance(dec_prev, DTensor):
-                        dec_prev = dec_prev.to_local()
-                    if isinstance(enc_curr, DTensor):
-                        enc_curr = enc_curr.to_local()
-                    device = enc_curr.device
-                    neuron1_indices = torch.randint(
-                        0, len(dec_prev), (self.cfg.feature_link_batch,), device=device
-                    )
-                    neuron2_indices = torch.randint(
-                        0, len(enc_curr), (self.cfg.feature_link_batch,), device=device
-                    )
-                    products_enc1 = dense_dense_cooout_matmul(
-                        dec_prev,
-                        enc_curr.mT,
-                        torch.stack([neuron1_indices, neuron2_indices]),
-                    ).float()
-                    dec1_norms = dec_prev.norm(dim=1)
-                    enc2_norms = enc_curr.norm(dim=1)
-                    feature_link_l1 += torch.abs(
-                        products_enc1
-                        / (
-                            dec1_norms[neuron1_indices] * enc2_norms[neuron2_indices]
-                        ).clamp(min=1e-6)
-                    ).mean() / len(prev_modules)
-                if isinstance(feature_link_l1, Tensor):
-                    feature_link_l1 = self.maybe_all_reduce(
-                        feature_link_l1, "mean", axis=None
-                    )
-                    feature_link_l1 = DTensor.from_local(
-                        feature_link_l1, self.mesh, [Replicate(), Replicate()]
-                    )
+                if self.cfg.feature_link_l1 > 0:
+                    for prev_module in prev_modules:
+                        dec_prev = prev_module.W_dec
+                        enc_curr = raw.encoder.weight
+                        if isinstance(dec_prev, DTensor):
+                            dec_prev = dec_prev.to_local()
+                        if isinstance(enc_curr, DTensor):
+                            enc_curr = enc_curr.to_local()
+                        device = enc_curr.device
+                        neuron1_indices = torch.randint(
+                            0,
+                            len(dec_prev),
+                            (self.cfg.feature_link_batch,),
+                            device=device,
+                        )
+                        neuron2_indices = torch.randint(
+                            0,
+                            len(enc_curr),
+                            (self.cfg.feature_link_batch,),
+                            device=device,
+                        )
+                        products_enc1 = dense_dense_cooout_matmul(
+                            dec_prev,
+                            enc_curr.mT,
+                            torch.stack([neuron1_indices, neuron2_indices]),
+                        ).float()
+                        dec1_norms = dec_prev.norm(dim=1)
+                        enc2_norms = enc_curr.norm(dim=1)
+                        feature_link_l1 += torch.abs(
+                            products_enc1
+                            / (
+                                dec1_norms[neuron1_indices]
+                                * enc2_norms[neuron2_indices]
+                            ).clamp(min=1e-6)
+                        ).mean() / len(prev_modules)
+                    if isinstance(feature_link_l1, Tensor):
+                        feature_link_l1 = self.maybe_all_reduce(
+                            feature_link_l1, "mean", axis=None
+                        )
+                        feature_link_l1 = DTensor.from_local(
+                            feature_link_l1, self.mesh, [Replicate(), Replicate()]
+                        )
+                    if isinstance(feature_link_l1, Tensor):
+                        avg_feature_link_l1[name] += float(
+                            feature_link_l1.detach() / denom
+                        )
 
-                if self.cfg.feature_link_l1 > 0 and isinstance(feature_link_l1, Tensor):
-                    avg_feature_link_l1[name] += float(feature_link_l1.detach() / denom)
                 if self.cfg.sae.multi_topk:
                     avg_multi_topk_fvu[name] += float(
                         out.multi_topk_fvu.detach() / denom

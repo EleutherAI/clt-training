@@ -7,6 +7,7 @@ BS=$1
 LR=$2
 NAME=bs${BS}-lr$LR
 SKIP="--skip_connection=True"
+SCALING="--post_encoder_scale=True"
 if [ -z "$3" ]; then
     CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
 else
@@ -22,6 +23,8 @@ else
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False" SKIP=""
     elif [ "$3" == "tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
+    elif [ "$3" == "tied-no-affine" ]; then
+        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$3" == "cross" ]; then
         # CROSSING="--cross_layer=12 --coalesce_topk=per-layer --topk_coalesced=False"
         # CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False"
@@ -78,7 +81,7 @@ openai-community/gpt2 --ctx_len 128 --filter_bos=True \
 --run_name gpt2-sweep/$NAME$name \
 $CROSSING \
 --b1 $B1 \
---post_encoder_scale=True --normalize_io=True \
+$SCALING --normalize_io=True \
 $SAVE_ARGS --lr $LR \
 --optimizer $OPTIMIZER --lr_warmup_steps 50 $extra \
 # --resume
