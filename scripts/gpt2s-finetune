@@ -11,4 +11,5 @@ openai-community/gpt2 --ctx_len 128 \
 --cross_layer=12 \
 --coalesce_topk=concat --topk_coalesced=False --post_encoder_scale=True --normalize_io=True \
 --lr 1e-4 --optimizer adam --lr_warmup_steps 50 \
---loss_fn kl \
+--loss_fn kl-fvu \
+# --loss_fn kl \

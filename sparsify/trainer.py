@@ -454,6 +454,7 @@ class Trainer:
         avg_feature_link_l1 = defaultdict(float)
         avg_fvu = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
+        fvu_losses = defaultdict(float)
         avg_ce = 0.0
         avg_kl = 0.0
         avg_losses = (
@@ -625,7 +626,15 @@ class Trainer:
             did_fire[name][latent_indices] = True
             self.maybe_all_reduce(did_fire[name], "max")
 
-            if self.cfg.loss_fn in ("ce", "kl"):
+            if "fvu" in self.cfg.loss_fn:
+                avg_fvu[name] += float(out.fvu.detach() / denom)
+                if self.cfg.auxk_alpha > 0:
+                    avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
+
+                if self.cfg.loss_fn == "kl-fvu":
+                    fvu_losses[name] = out.fvu
+
+            if self.cfg.loss_fn in ("ce", "kl", "kl-fvu"):
                 # reshard outputs
                 if self.mesh is not None:
                     output = output.redistribute(
@@ -643,13 +652,6 @@ class Trainer:
                 # Replace the normal output with the SAE output
                 return (output, *aux_out) if aux_out is not None else output
             else:
-                assert self.cfg.loss_fn == "fvu"
-
-                # Metrics that only make sense for local
-                avg_fvu[name] += float(out.fvu.detach() / denom)
-                if self.cfg.auxk_alpha > 0:
-                    avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
-
                 feature_link_l1 = 0.0
                 prev_modules = [mod for mod in runner.outputs.keys() if mod != name]
                 prev_modules = [self.saes[mod] for mod in prev_modules]
@@ -735,10 +737,14 @@ class Trainer:
             # Compute clean logits if using KL loss
             with self.implicit_replication():
                 clean_logits = (
-                    self.model(x).logits if self.cfg.loss_fn == "kl" else None
+                    self.model(x).logits
+                    if self.cfg.loss_fn in ("kl", "kl-fvu")
+                    else None
                 )
                 clean_probs = (
-                    clean_logits.softmax(dim=-1) if self.cfg.loss_fn == "kl" else None
+                    clean_logits.softmax(dim=-1)
+                    if self.cfg.loss_fn in ("kl", "kl-fvu")
+                    else None
                 )
 
             # Forward pass on the model to get the next batch of activations
@@ -759,14 +765,24 @@ class Trainer:
                             avg_ce += float(ce.detach() / denom)
 
                             avg_losses = avg_ce
-                        case "kl":
+                        case "kl" | "kl-fvu":
                             dirty_lps = self.model(x).logits.log_softmax(dim=-1)
                             kl = torch.sum(
                                 clean_probs
                                 * (clean_logits.log_softmax(dim=-1) - dirty_lps),
                                 dim=-1,
                             ).mean()
-                            kl.div(acc_steps).backward()
+                            loss = kl
+                            if self.cfg.loss_fn == "kl-fvu":
+                                if not isinstance(kl, DTensor):
+                                    kl = DTensor.from_local(
+                                        kl.unsqueeze(0),
+                                        self.mesh,
+                                        [Shard(0), Replicate()],
+                                    ).mean()
+                                fvu_loss = sum(fvu_losses.values())
+                                loss = kl * (fvu_loss / kl).detach() + fvu_loss
+                            loss.div(acc_steps).backward()
 
                             avg_kl += float(kl / denom)
                             avg_losses = avg_kl
@@ -824,7 +840,7 @@ class Trainer:
                     info = {}
                     if self.cfg.loss_fn == "ce":
                         info["ce_loss"] = avg_ce
-                    elif self.cfg.loss_fn == "kl":
+                    elif self.cfg.loss_fn in ("kl", "kl-fvu"):
                         info["kl_loss"] = avg_kl
 
                     for name in self.saes:
@@ -835,7 +851,7 @@ class Trainer:
 
                         ratio = mask.mean(dtype=torch.float32).item()
                         info.update({f"dead_pct/{name}": ratio})
-                        if self.cfg.loss_fn == "fvu":
+                        if "fvu" in self.cfg.loss_fn:
                             info[f"fvu/{name}"] = avg_fvu[name]
 
                         if self.cfg.auxk_alpha > 0:

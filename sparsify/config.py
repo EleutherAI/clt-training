@@ -103,12 +103,14 @@ class TrainConfig(Serializable):
     micro_acc_steps: int = 1
     """Chunk the activations into this number of microbatches for training."""
 
-    loss_fn: Literal["ce", "fvu", "kl"] = "fvu"
+    loss_fn: Literal["ce", "fvu", "kl", "kl-fvu"] = "fvu"
     """Loss function to use for training the sparse coders.
 
     - `ce`: Cross-entropy loss of the final model logits.
     - `fvu`: Fraction of variance explained.
     - `kl`: KL divergence of the final model logits w.r.t. the original logits.
+    - `kl-fvu`: KL divergence of the final model logits w.r.t. the original logits
+      plus FVU loss.
     """
 
     filter_bos: bool = False

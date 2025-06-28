@@ -5,10 +5,10 @@ from datetime import timedelta
 from multiprocessing import cpu_count
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
 import torch
 import torch.distributed as dist
 from datasets import Dataset, load_dataset
+from huggingface_hub import snapshot_download
 from simple_parsing import field, parse
 from torch.distributed.tensor import distribute_module, init_device_mesh
 from transformers import (
@@ -21,7 +21,7 @@ from transformers import (
 
 from .data import MemmapDataset, chunk_and_tokenize
 from .trainer import TrainConfig, Trainer
-from .utils import DISTRIBUTE_MODEL, barrier
+from .utils import DISTRIBUTE_MODEL
 
 
 @dataclass
@@ -167,6 +167,7 @@ def run():
         )
         dist.barrier()
         world_size = dist.get_world_size()
+        assert world_size % args.tp == 0, "world_size must be divisible by tp"
         mesh = init_device_mesh(
             "cuda",
             (world_size // args.tp, args.tp),
