@@ -299,17 +299,26 @@ class SparseCoder(nn.Module):
         self.num_latents = cfg.num_latents or d_in * cfg.expansion_factor
         self.multi_target = cfg.n_targets > 0 and cfg.transcode
         self.mesh = mesh
-        self.encoder = nn.Linear(d_in, self.num_latents, device=device, dtype=dtype)
+        weight_dtype = cfg.torch_dtype
+        if weight_dtype is None:
+            weight_dtype = dtype
+        encoder_dtype = dtype
+        decoder_dtype = weight_dtype
+        self.encoder = nn.Linear(
+            d_in, self.num_latents, device=device, dtype=encoder_dtype
+        )
         self.encoder.bias.data.zero_()
         if mesh is None:
-            self.encoder = nn.Linear(d_in, self.num_latents, device=device, dtype=dtype)
+            self.encoder = nn.Linear(
+                d_in, self.num_latents, device=device, dtype=encoder_dtype
+            )
             self.encoder.bias.data.zero_()
         else:
             self.encoder = nn.Linear(
                 d_in,
                 self.num_latents // mesh.shape[1],
                 device=device,
-                dtype=dtype,
+                dtype=encoder_dtype,
             )
             self.encoder.bias.data.zero_()
             scaling = 1 / self.encoder.weight.shape[1] ** 0.5
@@ -319,7 +328,7 @@ class SparseCoder(nn.Module):
                     # default torch initialization
                     dtensor.rand(
                         (self.num_latents, d_in),
-                        dtype=dtype,
+                        dtype=encoder_dtype,
                         device_mesh=mesh,
                         placements=[dtensor.Replicate(), dtensor.Shard(0)],
                     )
@@ -352,7 +361,7 @@ class SparseCoder(nn.Module):
                     if mesh is not None:
                         result = dtensor.zeros(
                             (num_latents, d_in),
-                            dtype=dtype,
+                            dtype=decoder_dtype,
                             device_mesh=mesh,
                             placements=[
                                 dtensor.Replicate(),
@@ -361,7 +370,7 @@ class SparseCoder(nn.Module):
                         )
                     else:
                         result = torch.zeros(
-                            num_latents, d_in, device=device, dtype=dtype
+                            num_latents, d_in, device=device, dtype=decoder_dtype
                         )
                     return nn.Parameter(result)
 
@@ -687,11 +696,6 @@ class SparseCoder(nn.Module):
         y = decoder_impl(top_indices, top_acts.to(self.dtype), W_dec)
         return y + b_dec
 
-    @torch.autocast(
-        "cuda",
-        dtype=torch.bfloat16,
-        enabled=torch.cuda.is_bf16_supported(),
-    )
     def forward(
         self,
         x: Tensor,
@@ -701,17 +705,24 @@ class SparseCoder(nn.Module):
         return_mid_decoder: bool = False,
         loss_mask: Tensor | None = None,
     ) -> ForwardOutput | MidDecoder:
-        top_acts, top_indices, pre_acts = self.encode(x)
-        if self.multi_target:
-            pre_acts = None
+        with torch.autocast(
+            "cuda",
+            dtype=torch.bfloat16 if self.cfg.dtype != "float16" else torch.float16,
+            enabled=torch.cuda.is_bf16_supported(),
+        ):
+            top_acts, top_indices, pre_acts = self.encode(x)
+            if self.multi_target:
+                pre_acts = None
 
-        x = self.normalize_input(x)
+            x = self.normalize_input(x)
 
-        mid_decoder = MidDecoder(self, x, top_acts, top_indices, dead_mask, pre_acts)
-        if self.multi_target or return_mid_decoder:
-            return mid_decoder
-        else:
-            return mid_decoder(y, 0, loss_mask=loss_mask)
+            mid_decoder = MidDecoder(
+                self, x, top_acts, top_indices, dead_mask, pre_acts
+            )
+            if self.multi_target or return_mid_decoder:
+                return mid_decoder
+            else:
+                return mid_decoder(y, 0, loss_mask=loss_mask)
 
     @torch.no_grad()
     def set_decoder_norm_to_unit_norm(self):

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Literal
 
+import torch
 from simple_parsing import Serializable, list_field
 
 
@@ -10,6 +11,19 @@ class SparseCoderConfig(Serializable):
     """
     Configuration for training a sparse coder on a language model.
     """
+
+    dtype: Literal["none", "float32", "float16", "bfloat16"] = "none"
+    """Data type for sparse coder weights."""
+
+    @property
+    def torch_dtype(self):
+        if self.dtype == "none":
+            return None
+        return dict(
+            float32=torch.float32,
+            float16=torch.float16,
+            bfloat16=torch.bfloat16,
+        )[self.dtype]
 
     activation: Literal["groupmax", "topk", "batchtopk"] = "topk"
     """Activation function to use."""
@@ -163,6 +177,9 @@ class TrainConfig(Serializable):
     cross_layer: int = 0
     """How many layers ahead to train the sparse coder on.
     If 0, train only on the same layer."""
+
+    grad_scaler: bool = False
+    """Use a gradient scaler."""
 
     tp: int = 1
     """Number of tensor parallel ranks to use."""

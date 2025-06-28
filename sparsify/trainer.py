@@ -138,7 +138,11 @@ class Trainer:
                     n_sources=n_sources,
                 )
                 self.saes[name] = SparseCoder(
-                    input_widths[hook], sae_cfg, device, dtype=torch.float32, mesh=mesh
+                    input_widths[hook],
+                    sae_cfg,
+                    device,
+                    mesh=mesh,
+                    dtype=torch.float32,
                 )
 
         assert isinstance(dataset, Sized)
@@ -174,7 +178,15 @@ class Trainer:
                 # For logging purposes
                 lrs = [f"{lr:.2e}" for lr in sorted(set(float(pg["lr"]) for pg in pgs))]
 
-                adam = Adam(pgs)
+                adam = Adam(
+                    pgs,
+                    betas=(cfg.b1, cfg.b2),
+                    **(
+                        dict(bf16_stochastic_round=True)
+                        if cfg.sae.dtype == "bfloat16" and cfg.optimizer == "adam8"
+                        else {}
+                    ),
+                )
                 self.optimizers = [adam]
                 self.lr_schedulers = [
                     WarmupLinearSchedule(adam, cfg.lr_warmup_steps, num_batches)
@@ -472,7 +484,7 @@ class Trainer:
         module_to_name = {v: k for k, v in name_to_module.items()}
 
         cached_inputs = {}
-
+        grad_scalers = {}
         runner = CrossLayerRunner()
 
         def record_inputs(module: nn.Module, inputs, outputs):
@@ -697,10 +709,15 @@ class Trainer:
                     + self.cfg.auxk_alpha * out.auxk_loss
                     + out.multi_topk_fvu / 8
                     + self.cfg.feature_link_l1 * feature_link_l1
-                )
+                ) / acc_steps
+
+                if self.cfg.grad_scaler:
+                    if name not in grad_scalers:
+                        grad_scalers[name] = torch.amp.GradScaler()
+                    loss = grad_scalers[name].scale(loss)
 
                 # Do a "local" backward pass if we're not training end-to-end
-                loss.div(acc_steps).backward()
+                loss.backward()
             del loss
 
             runner.restore()
@@ -769,8 +786,12 @@ class Trainer:
                     for sae in self.saes.values():
                         sae.remove_gradient_parallel_to_decoder_directions()
 
-                for optimizer in self.optimizers:
-                    optimizer.step()
+                for name, optimizer in zip(self.saes.keys(), self.optimizers):
+                    if self.cfg.grad_scaler:
+                        grad_scalers[name].step(optimizer)
+                        grad_scalers[name].update()
+                    else:
+                        optimizer.step()
                     optimizer.zero_grad()
 
                 for scheduler in self.lr_schedulers:
