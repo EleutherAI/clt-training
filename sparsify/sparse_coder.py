@@ -302,7 +302,7 @@ class SparseCoder(nn.Module):
         weight_dtype = cfg.torch_dtype
         if weight_dtype is None:
             weight_dtype = dtype
-        encoder_dtype = dtype
+        encoder_dtype = weight_dtype
         decoder_dtype = weight_dtype
         self.encoder = nn.Linear(
             d_in, self.num_latents, device=device, dtype=encoder_dtype
