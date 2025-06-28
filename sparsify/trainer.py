@@ -485,6 +485,7 @@ class Trainer:
         module_to_name = {v: k for k, v in name_to_module.items()}
 
         cached_inputs = {}
+        cached_outputs = {}
         grad_scalers = {}
         runner = CrossLayerRunner()
 
@@ -492,6 +493,11 @@ class Trainer:
             if isinstance(inputs, tuple):
                 inputs = inputs[0]
             cached_inputs[module_to_name[module]] = inputs
+
+        def record_outputs(module: nn.Module, inputs, outputs):
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            cached_outputs[module_to_name[module]] = outputs
 
         def hook(module: nn.Module, inputs, outputs):
             barrier()
@@ -505,6 +511,8 @@ class Trainer:
                 outputs, *aux_out = outputs
 
             module_name = module_to_name[module]
+            if module_name in cached_outputs:
+                outputs = cached_outputs.pop(module_name)
             layer_idx = self.cfg.hookpoints.index(module_name)
             if layer_idx < len(self.cfg.hookpoints_in):
                 inputs = cached_inputs.pop(self.cfg.hookpoints_in[layer_idx])
@@ -607,7 +615,7 @@ class Trainer:
                 ),
                 loss_mask=(
                     ~bos_mask_mesh
-                    if self.cfg.loss_fn == "fvu" and self.cfg.filter_bos
+                    if "fvu" in self.cfg.loss_fn and self.cfg.filter_bos
                     else None
                 ),
             )
@@ -736,11 +744,19 @@ class Trainer:
 
             # Compute clean logits if using KL loss
             with self.implicit_replication():
+                # handles = [
+                #     mod.register_forward_hook(
+                #         record_outputs if name in self.cfg.hookpoints else None
+                #     )
+                #     for name, mod in name_to_module.items()
+                # ] if self.cfg.loss_fn == "kl-fvu" else []
                 clean_logits = (
                     self.model(x).logits
                     if self.cfg.loss_fn in ("kl", "kl-fvu")
                     else None
                 )
+                # for handle in handles:
+                #     handle.remove()
                 clean_probs = (
                     clean_logits.softmax(dim=-1)
                     if self.cfg.loss_fn in ("kl", "kl-fvu")
@@ -781,7 +797,10 @@ class Trainer:
                                         [Shard(0), Replicate()],
                                     ).mean()
                                 fvu_loss = sum(fvu_losses.values())
-                                loss = kl * (fvu_loss / kl).detach() + fvu_loss
+                                kl_coeff = self.cfg.kl_coeff
+                                if kl_coeff == 0.0:
+                                    kl_coeff = (fvu_loss / kl).detach()
+                                loss = kl * kl_coeff + fvu_loss
                             loss.div(acc_steps).backward()
 
                             avg_kl += float(kl / denom)

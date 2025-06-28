@@ -113,6 +113,9 @@ class TrainConfig(Serializable):
       plus FVU loss.
     """
 
+    kl_coeff: float = 1.0
+    """Coefficient for the KL divergence loss for KL+FVU. 0.0 -> automatic scaling."""
+
     filter_bos: bool = False
     """Filter out BOS tokens from the dataset for KL loss."""
 
