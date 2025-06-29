@@ -26,7 +26,7 @@ from .kernels import dense_dense_cooout_matmul
 
 # from .nanogpt import Muon
 from .muon import Muon
-from .runner import CrossLayerRunner
+from .runner import CrossLayerRunner, MatryoshkaRunner
 from .sign_sgd import SignSGD
 from .sparse_coder import ForwardOutput, SparseCoder
 from .utils import (
@@ -138,6 +138,7 @@ class Trainer:
                     n_targets=n_targets,
                     n_sources=n_sources,
                 )
+                
                 self.saes[name] = SparseCoder(
                     input_widths[hook],
                     sae_cfg,
@@ -607,7 +608,13 @@ class Trainer:
             if raw.cfg.normalize_decoder and not self.cfg.sae.transcode:
                 raw.set_decoder_norm_to_unit_norm()
 
-            out = runner(
+            # Choose the appropriate runner based on whether matryoshka is enabled
+            if self.cfg.sae.matroshka:
+                current_runner = MatryoshkaRunner()
+            else:
+                current_runner = runner
+
+            out = current_runner(
                 inputs,
                 outputs,
                 sparse_coder=wrapped,
@@ -732,7 +739,7 @@ class Trainer:
                 loss.backward()
             del loss
 
-            runner.restore()
+            current_runner.restore()
 
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
@@ -772,14 +779,12 @@ class Trainer:
                 )
 
             # Forward pass on the model to get the next batch of activations
+            # Choose the appropriate hook based on whether matryoshka is enabled
+            hook_function = hook
+            
             handles = [
                 mod.register_forward_hook(
-                    partial(
-                        hook,
-                        force_loss_fn=None if self.cfg.loss_fn != "kl-fvu" else "kl",
-                    )
-                    if name in self.cfg.hookpoints
-                    else record_inputs
+                    hook_function if name in self.cfg.hookpoints else record_inputs
                 )
                 for name, mod in name_to_module.items()
             ]
@@ -921,9 +926,9 @@ class Trainer:
             self.global_step += 1
             pbar.update()
 
-        self.save()
-        if self.cfg.save_best:
-            self.save_best(avg_losses)
+            self.save()
+            if self.cfg.save_best:
+                self.save_best(avg_losses)
 
         pbar.close()
 

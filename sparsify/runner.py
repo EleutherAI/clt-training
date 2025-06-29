@@ -8,6 +8,201 @@ from torch.distributed.tensor.experimental import local_map
 from .sparse_coder import MidDecoder, SparseCoder
 
 
+class MatryoshkaRunner:
+    """
+    Runner for Matryoshka-style transcoder training.
+    Performs multiple forward passes with different encoder/decoder slices
+    and combines the losses.
+    """
+    
+    def __init__(self):
+        self.outputs = {}
+        self.to_restore = {}
+    
+    def encode(self, x: Tensor, sparse_coder: SparseCoder, **kwargs):
+        """Encode using the full encoder and return MidDecoder."""
+        out_mid = sparse_coder(
+            x=x,
+            y=None,
+            return_mid_decoder=True,
+            **kwargs,
+        )
+        return out_mid
+    
+    def decode_slice(
+        self,
+        mid_out: MidDecoder,
+        y: Tensor,
+        module_name: str,
+        k_start: int,
+        k_end: int,
+        detach_grad: bool = False,
+        **kwargs,
+    ):
+        """Decode using a slice of the encoder/decoder."""
+        # Create a copy of the MidDecoder with sliced activations and indices
+        sliced_activations = mid_out.latent_acts[:, k_start:k_end]
+        sliced_indices = mid_out.latent_indices[:, k_start:k_end]
+        
+        # Adjust indices to be relative to the slice
+        if k_start > 0:
+            sliced_indices = sliced_indices - k_start
+        
+        # Create a temporary MidDecoder for this slice
+        sliced_mid = mid_out.copy(
+            activations=sliced_activations,
+            indices=sliced_indices,
+        )
+        
+        # Temporarily modify the sparse coder to use sliced decoder
+        original_W_dec = sliced_mid.sparse_coder.W_dec
+        original_b_dec = sliced_mid.sparse_coder.b_dec
+        
+        # Use slices of the decoder weights and bias
+        if hasattr(sliced_mid.sparse_coder, "W_decs"):
+            sliced_mid.sparse_coder.W_decs[0] = original_W_dec[k_start:k_end, :]
+            sliced_mid.sparse_coder.b_decs[0] = original_b_dec
+        else:
+            sliced_mid.sparse_coder.W_dec = original_W_dec[k_start:k_end, :]
+            sliced_mid.sparse_coder.b_dec = original_b_dec
+        
+        # Perform decoding
+        if detach_grad:
+            sliced_mid.detach()
+        
+        out = sliced_mid(
+            y,
+            addition=0,
+            no_extras=False,
+            denormalize=True,
+            **kwargs,
+        )
+        
+        # Restore original decoder weights
+        if hasattr(sliced_mid.sparse_coder, "W_decs"):
+            sliced_mid.sparse_coder.W_decs[0] = original_W_dec
+            sliced_mid.sparse_coder.b_decs[0] = original_b_dec
+        else:
+            sliced_mid.sparse_coder.W_dec = original_W_dec
+            sliced_mid.sparse_coder.b_dec = original_b_dec
+        
+        return out
+    
+    def decode(
+        self,
+        mid_out: MidDecoder,
+        y: Tensor,
+        module_name: str,
+        detach_grad: bool = False,
+        advance: bool = True,
+        **kwargs,
+    ):
+        """Decode using multiple slices and combine losses."""
+        self.outputs[module_name] = mid_out
+        
+        # Get Matryoshka sizes
+        if mid_out.sparse_coder.cfg.matroshka_k_values:
+            matryoshka_sizes = mid_out.sparse_coder.cfg.matroshka_k_values
+            print(f"Matryoshka: Using k_values: {matryoshka_sizes}")
+        elif mid_out.sparse_coder.cfg.matroshka_expansion_factors:
+            # Extrapolate k values from expansion factors
+            d_in = mid_out.sparse_coder.d_in
+            matryoshka_sizes = [d_in * ef for ef in mid_out.sparse_coder.cfg.matroshka_expansion_factors]
+            print(f"Matryoshka: Using expansion_factors {mid_out.sparse_coder.cfg.matroshka_expansion_factors} -> sizes: {matryoshka_sizes} (d_in={d_in})")
+        else:
+            # Default to single size
+            matryoshka_sizes = [mid_out.sparse_coder.cfg.k]
+            print(f"Matryoshka: Using default k: {matryoshka_sizes}")
+        
+        # Calculate cumulative k values for slicing
+        cumulative_k = [0]
+        for k in matryoshka_sizes:
+            cumulative_k.append(cumulative_k[-1] + k)
+        
+        print(f"Matryoshka: Cumulative k values: {cumulative_k}")
+        
+        # Perform decoding for each slice
+        slice_outputs = []
+        total_fvu = 0.0
+        total_auxk_loss = 0.0
+        total_multi_topk_fvu = 0.0
+        
+        for i in range(len(matryoshka_sizes)):
+            k_start = cumulative_k[i]
+            k_end = cumulative_k[i + 1]
+            
+            print(f"Matryoshka: Processing slice {i}: k_start={k_start}, k_end={k_end}")
+            
+            slice_out = self.decode_slice(
+                mid_out,
+                y,
+                module_name,
+                k_start,
+                k_end,
+                detach_grad,
+                **kwargs,
+            )
+            
+            slice_outputs.append(slice_out)
+            total_fvu += slice_out.fvu
+            total_auxk_loss += slice_out.auxk_loss
+            total_multi_topk_fvu += slice_out.multi_topk_fvu
+        
+        # Average the losses across all slices
+        num_slices = len(matryoshka_sizes)
+        avg_fvu = total_fvu / num_slices
+        avg_auxk_loss = total_auxk_loss / num_slices
+        avg_multi_topk_fvu = total_multi_topk_fvu / num_slices
+        
+        print(f"Matryoshka: Final losses - avg_fvu={avg_fvu:.6f}, avg_auxk={avg_auxk_loss:.6f}, avg_multi_topk={avg_multi_topk_fvu:.6f}")
+        
+        # Use the output from the largest slice as the main output
+        main_output = slice_outputs[-1]
+        
+        # Create combined ForwardOutput
+        combined_output = replace(
+            main_output,
+            fvu=avg_fvu,
+            auxk_loss=avg_auxk_loss,
+            multi_topk_fvu=avg_multi_topk_fvu,
+        )
+        
+        if advance:
+            for hookpoint in list(self.outputs.keys()):
+                if hookpoint == module_name:
+                    del self.outputs[hookpoint]
+        
+        return combined_output
+    
+    def __call__(
+        self,
+        x: Tensor,
+        y: Tensor,
+        sparse_coder: SparseCoder,
+        module_name: str,
+        detach_grad: bool = False,
+        dead_mask: Tensor | None = None,
+        loss_mask: Tensor | None = None,
+        *,
+        encoder_kwargs: dict = {},
+        decoder_kwargs: dict = {},
+    ):
+        mid_out = self.encode(x, sparse_coder, dead_mask=dead_mask, **encoder_kwargs)
+        return self.decode(
+            mid_out, y, module_name, detach_grad, loss_mask=loss_mask, **decoder_kwargs
+        )
+    
+    def restore(self):
+        for restorable, was_last in self.to_restore.values():
+            if was_last:
+                restorable.restore(True)
+        self.to_restore.clear()
+    
+    def reset(self):
+        self.outputs.clear()
+        self.to_restore.clear()
+
+
 class CrossLayerRunner(object):
     def __init__(self):
         self.outputs = {}
