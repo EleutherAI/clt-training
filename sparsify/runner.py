@@ -6,6 +6,7 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor.experimental import local_map
 
 from .sparse_coder import MidDecoder, SparseCoder
+from .utils import decoder_impl
 
 
 class MatryoshkaRunner:
@@ -59,37 +60,14 @@ class MatryoshkaRunner:
         original_b_dec = sliced_mid.sparse_coder.b_dec
         original_b_enc = sliced_mid.sparse_coder.encoder.bias
         
-        # Create temporary parameters with sliced data
-        import torch.nn as nn
+        # Create sliced views without replacing parameters
+        sliced_W_dec = original_W_dec[k_start:k_end, :]
+        sliced_b_dec = original_b_dec  # Keep decoder bias shared globally
         
-        # Slice the decoder weights
-        sliced_W_dec = nn.Parameter(original_W_dec[k_start:k_end, :].clone())
-        
-        # Keep decoder bias shared globally (don't slice it)
-        sliced_b_dec = nn.Parameter(original_b_dec.clone())
-        
-        # Slice the encoder bias
         if original_b_enc is not None:
-            sliced_b_enc = nn.Parameter(original_b_enc[k_start:k_end].clone())
+            sliced_b_enc = original_b_enc[k_start:k_end]
         else:
             sliced_b_enc = None
-        
-        # Temporarily replace the parameters
-        if hasattr(sliced_mid.sparse_coder, "W_decs"):
-            original_W_dec_param = sliced_mid.sparse_coder.W_decs[0]
-            original_b_dec_param = sliced_mid.sparse_coder.b_decs[0]
-            sliced_mid.sparse_coder.W_decs[0] = sliced_W_dec
-            sliced_mid.sparse_coder.b_decs[0] = sliced_b_dec
-        else:
-            original_W_dec_param = sliced_mid.sparse_coder.W_dec
-            original_b_dec_param = sliced_mid.sparse_coder.b_dec
-            sliced_mid.sparse_coder.W_dec = sliced_W_dec
-            sliced_mid.sparse_coder.b_dec = sliced_b_dec
-        
-        # Replace encoder bias
-        original_b_enc_param = sliced_mid.sparse_coder.encoder.bias
-        if sliced_b_enc is not None:
-            sliced_mid.sparse_coder.encoder.bias = sliced_b_enc
         
         print(f"Matryoshka: Decoder bias kept shared globally: {original_b_dec.shape}")
         if sliced_b_enc is not None:
@@ -97,11 +75,23 @@ class MatryoshkaRunner:
         else:
             print(f"Matryoshka: No encoder bias to slice (k_start={k_start}, k_end={k_end})")
         
+        # Perform decoding with sliced views
+        if detach_grad:
+            sliced_mid.detach()
+        
+        # Use the sliced weights directly in the decode function
+        # We need to temporarily override the decode method to use our sliced weights
+        original_decode = sliced_mid.sparse_coder.decode
+        
+        def sliced_decode(top_acts, top_indices, index=0):
+            # Use sliced decoder weights
+            y = decoder_impl(top_indices, top_acts.to(sliced_mid.sparse_coder.dtype), sliced_W_dec)
+            return y + sliced_b_dec
+        
+        # Temporarily replace the decode method
+        sliced_mid.sparse_coder.decode = sliced_decode
+        
         try:
-            # Perform decoding
-            if detach_grad:
-                sliced_mid.detach()
-            
             out = sliced_mid(
                 y,
                 addition=0,
@@ -110,16 +100,8 @@ class MatryoshkaRunner:
                 **kwargs,
             )
         finally:
-            # Restore original parameters
-            if hasattr(sliced_mid.sparse_coder, "W_decs"):
-                sliced_mid.sparse_coder.W_decs[0] = original_W_dec_param
-                sliced_mid.sparse_coder.b_decs[0] = original_b_dec_param
-            else:
-                sliced_mid.sparse_coder.W_dec = original_W_dec_param
-                sliced_mid.sparse_coder.b_dec = original_b_dec_param
-            
-            # Restore original encoder bias
-            sliced_mid.sparse_coder.encoder.bias = original_b_enc_param
+            # Restore original decode method
+            sliced_mid.sparse_coder.decode = original_decode
         
         return out
     
