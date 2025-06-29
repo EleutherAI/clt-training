@@ -117,14 +117,14 @@ class MatryoshkaRunner:
         self.outputs[module_name] = mid_out
         
         # Get Matryoshka sizes
-        if mid_out.sparse_coder.cfg.matroshka_k_values:
-            matryoshka_sizes = mid_out.sparse_coder.cfg.matroshka_k_values
+        if mid_out.sparse_coder.cfg.matryoshka_k_values:
+            matryoshka_sizes = mid_out.sparse_coder.cfg.matryoshka_k_values
             print(f"Matryoshka: Using k_values: {matryoshka_sizes}")
-        elif mid_out.sparse_coder.cfg.matroshka_expansion_factors:
+        elif mid_out.sparse_coder.cfg.matryoshka_expansion_factors:
             # Extrapolate k values from expansion factors
             d_in = mid_out.sparse_coder.d_in
-            matryoshka_sizes = [d_in * ef for ef in mid_out.sparse_coder.cfg.matroshka_expansion_factors]
-            print(f"Matryoshka: Using expansion_factors {mid_out.sparse_coder.cfg.matroshka_expansion_factors} -> sizes: {matryoshka_sizes} (d_in={d_in})")
+            matryoshka_sizes = [d_in * ef for ef in mid_out.sparse_coder.cfg.matryoshka_expansion_factors]
+            print(f"Matryoshka: Using expansion_factors {mid_out.sparse_coder.cfg.matryoshka_expansion_factors} -> sizes: {matryoshka_sizes} (d_in={d_in})")
         else:
             # Default to single size
             matryoshka_sizes = [mid_out.sparse_coder.cfg.k]
