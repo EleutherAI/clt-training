@@ -609,7 +609,7 @@ class Trainer:
                 raw.set_decoder_norm_to_unit_norm()
 
             # Choose the appropriate runner based on whether matryoshka is enabled
-            if self.cfg.sae.matroshka:
+            if self.cfg.sae.matryoshka:
                 current_runner = MatryoshkaRunner()
             else:
                 current_runner = runner
