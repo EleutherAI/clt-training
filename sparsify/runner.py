@@ -54,53 +54,64 @@ class MatryoshkaRunner:
             indices=sliced_indices,
         )
         
-        # Temporarily modify the sparse coder to use sliced decoder
+        # Store original weights and biases for restoration
         original_W_dec = sliced_mid.sparse_coder.W_dec
         original_b_dec = sliced_mid.sparse_coder.b_dec
-        
-        # Store original encoder bias for restoration
         original_b_enc = sliced_mid.sparse_coder.encoder.bias
         
-        # Use slices of the decoder weights and bias
+        # Temporarily modify the decoder weights and bias data (not the parameter itself)
         if hasattr(sliced_mid.sparse_coder, "W_decs"):
-            sliced_mid.sparse_coder.W_decs[0] = original_W_dec[k_start:k_end, :]
-            sliced_mid.sparse_coder.b_decs[0] = original_b_dec  # Keep decoder bias shared globally
+            # Store original data
+            original_W_dec_data = sliced_mid.sparse_coder.W_decs[0].data.clone()
+            original_b_dec_data = sliced_mid.sparse_coder.b_decs[0].data.clone()
+            
+            # Temporarily replace the data
+            sliced_mid.sparse_coder.W_decs[0].data = original_W_dec[k_start:k_end, :]
+            sliced_mid.sparse_coder.b_decs[0].data = original_b_dec  # Keep decoder bias shared globally
         else:
-            sliced_mid.sparse_coder.W_dec = original_W_dec[k_start:k_end, :]
-            sliced_mid.sparse_coder.b_dec = original_b_dec  # Keep decoder bias shared globally
+            # Store original data
+            original_W_dec_data = sliced_mid.sparse_coder.W_dec.data.clone()
+            original_b_dec_data = sliced_mid.sparse_coder.b_dec.data.clone()
+            
+            # Temporarily replace the data
+            sliced_mid.sparse_coder.W_dec.data = original_W_dec[k_start:k_end, :]
+            sliced_mid.sparse_coder.b_dec.data = original_b_dec  # Keep decoder bias shared globally
         
         print(f"Matryoshka: Decoder bias kept shared globally: {original_b_dec.shape}")
         
-        # Slice the encoder bias: b_enc[k_start:k_end]
+        # Temporarily modify the encoder bias data
         if original_b_enc is not None:
-            sliced_mid.sparse_coder.encoder.bias = original_b_enc[k_start:k_end]
+            original_b_enc_data = sliced_mid.sparse_coder.encoder.bias.data.clone()
+            sliced_mid.sparse_coder.encoder.bias.data = original_b_enc[k_start:k_end]
             print(f"Matryoshka: Sliced encoder bias from {original_b_enc.shape} to {sliced_mid.sparse_coder.encoder.bias.shape} (k_start={k_start}, k_end={k_end})")
         else:
+            original_b_enc_data = None
             print(f"Matryoshka: No encoder bias to slice (k_start={k_start}, k_end={k_end})")
         
-        # Perform decoding
-        if detach_grad:
-            sliced_mid.detach()
-        
-        out = sliced_mid(
-            y,
-            addition=0,
-            no_extras=False,
-            denormalize=True,
-            **kwargs,
-        )
-        
-        # Restore original decoder weights and encoder bias
-        if hasattr(sliced_mid.sparse_coder, "W_decs"):
-            sliced_mid.sparse_coder.W_decs[0] = original_W_dec
-            sliced_mid.sparse_coder.b_decs[0] = original_b_dec
-        else:
-            sliced_mid.sparse_coder.W_dec = original_W_dec
-            sliced_mid.sparse_coder.b_dec = original_b_dec
-        
-        # Restore original encoder bias
-        if original_b_enc is not None:
-            sliced_mid.sparse_coder.encoder.bias = original_b_enc
+        try:
+            # Perform decoding
+            if detach_grad:
+                sliced_mid.detach()
+            
+            out = sliced_mid(
+                y,
+                addition=0,
+                no_extras=False,
+                denormalize=True,
+                **kwargs,
+            )
+        finally:
+            # Restore original decoder weights and bias data
+            if hasattr(sliced_mid.sparse_coder, "W_decs"):
+                sliced_mid.sparse_coder.W_decs[0].data = original_W_dec_data
+                sliced_mid.sparse_coder.b_decs[0].data = original_b_dec_data
+            else:
+                sliced_mid.sparse_coder.W_dec.data = original_W_dec_data
+                sliced_mid.sparse_coder.b_dec.data = original_b_dec_data
+            
+            # Restore original encoder bias data
+            if original_b_enc_data is not None:
+                sliced_mid.sparse_coder.encoder.bias.data = original_b_enc_data
         
         return out
     
