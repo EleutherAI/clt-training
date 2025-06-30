@@ -9,7 +9,7 @@ from .sparse_coder import MidDecoder, SparseCoder
 from .utils import decoder_impl
 
 
-cfrom __future__ import annotations
+from __future__ import annotations
 
 """Matryoshka‑style runner that *inherits all the cross‑layer coalescing tricks* of
 `CrossLayerRunner` while still performing the slice‑by‑slice Matryoshka loss
