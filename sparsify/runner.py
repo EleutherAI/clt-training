@@ -241,6 +241,13 @@ class MatryoshkaRunner:
         print(f"Total features: {cumulative[-1]}")
         print(f"Original activations shape: {mid_out.latent_acts.shape}")
         print(f"Original indices shape: {mid_out.latent_indices.shape}")
+        print(f"Original activations total elements: {mid_out.latent_acts.numel()}")
+        print(f"Original indices total elements: {mid_out.latent_indices.numel()}")
+        
+        # Check if we have enough features for the requested slices
+        if mid_out.latent_acts.shape[1] < cumulative[-1]:
+            print(f"WARNING: Requested {cumulative[-1]} features but only have {mid_out.latent_acts.shape[1]}")
+            print(f"This will cause empty slices!")
 
         slice_outputs = []
         total_fvu = mid_out.latent_acts.new_tensor(0.0)
@@ -260,13 +267,38 @@ class MatryoshkaRunner:
             
             print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_size} (indices {k_start}:{k_end}) ---")
 
-            activations = mid_out.latent_acts[:, k_start:k_end]
-            indices = mid_out.latent_indices[:, k_start:k_end]
-            sliced_mid = mid_out.copy(activations=activations, indices=indices)
+            # Get the pre-activations for this slice
+            if mid_out.pre_acts is not None:
+                slice_pre_acts = mid_out.pre_acts[:, k_start:k_end]
+                print(f"  Slice pre-activations shape: {slice_pre_acts.shape}")
+                
+                # Apply top-k selection to this slice
+                if k_size > 0:
+                    # Use the smaller of k_size or the actual number of features in the slice
+                    actual_k = min(k_size, slice_pre_acts.shape[1])
+                    top_acts, top_indices = slice_pre_acts.topk(actual_k, dim=1, sorted=False)
+                    # Adjust indices to be absolute within the full feature space
+                    top_indices = top_indices + k_start
+                else:
+                    # Empty slice
+                    top_acts = mid_out.latent_acts.new_empty(mid_out.latent_acts.shape[0], 0)
+                    top_indices = mid_out.latent_indices.new_empty(mid_out.latent_indices.shape[0], 0)
+            else:
+                # Fallback: slice the already-selected activations (but this is wrong!)
+                print(f"  WARNING: No pre_acts available, falling back to slicing top-k activations")
+                top_acts = mid_out.latent_acts[:, k_start:k_end]
+                top_indices = mid_out.latent_indices[:, k_start:k_end]
             
-            print(f"  Slice activations shape: {activations.shape}")
-            print(f"  Slice indices shape: {indices.shape}")
-            print(f"  Slice indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
+            sliced_mid = mid_out.copy(activations=top_acts, indices=top_indices)
+            
+            print(f"  Slice activations shape: {top_acts.shape}")
+            print(f"  Slice indices shape: {top_indices.shape}")
+            print(f"  Slice activations total elements: {top_acts.numel()}")
+            print(f"  Slice indices total elements: {top_indices.numel()}")
+            if top_indices.numel() > 0:
+                print(f"  Slice indices range: {top_indices.min().item():.0f} to {top_indices.max().item():.0f}")
+            else:
+                print(f"  Slice indices range: EMPTY TENSOR")
 
             out_slice = self._decode_slice(
                 sliced_mid,
@@ -318,7 +350,10 @@ class MatryoshkaRunner:
         print(f"{'='*40}")
         print(f"Concatenated activations shape: {all_activations.shape}")
         print(f"Concatenated indices shape: {all_indices.shape}")
-        print(f"Concatenated indices range: {all_indices.min().item():.0f} to {all_indices.max().item():.0f}")
+        if all_indices.numel() > 0:
+            print(f"Concatenated indices range: {all_indices.min().item():.0f} to {all_indices.max().item():.0f}")
+        else:
+            print(f"Concatenated indices range: EMPTY TENSOR")
         
         # Use the largest slice's output as the base, but replace activations/indices
         main_output = slice_outputs[-1]
