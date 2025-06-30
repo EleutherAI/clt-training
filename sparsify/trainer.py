@@ -3,6 +3,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from fnmatch import fnmatchcase
+from functools import partial
 from glob import glob
 from typing import Sized
 
@@ -457,6 +458,7 @@ class Trainer:
         fvu_losses = defaultdict(float)
         avg_ce = 0.0
         avg_kl = 0.0
+        avg_acc_top1 = 0.0
         avg_losses = (
             {name: float("inf") for name in self.cfg.hookpoints}
             if self.cfg.loss_fn == "fvu"
@@ -499,8 +501,11 @@ class Trainer:
                 outputs = outputs[0]
             cached_outputs[module_to_name[module]] = outputs
 
-        def hook(module: nn.Module, inputs, outputs):
-            barrier()
+        def hook(module: nn.Module, inputs, outputs, force_loss_fn=None):
+            if force_loss_fn is not None:
+                loss_fn = force_loss_fn
+            else:
+                loss_fn = self.cfg.loss_fn
 
             aux_out = None
 
@@ -607,16 +612,14 @@ class Trainer:
                 outputs,
                 sparse_coder=wrapped,
                 module_name=name,
-                detach_grad=self.cfg.loss_fn == "fvu",
+                detach_grad=loss_fn == "fvu",
                 dead_mask=(
                     self.num_tokens_since_fired[name] > self.cfg.dead_feature_threshold
                     if self.cfg.auxk_alpha > 0
                     else None
                 ),
                 loss_mask=(
-                    ~bos_mask_mesh
-                    if "fvu" in self.cfg.loss_fn and self.cfg.filter_bos
-                    else None
+                    ~bos_mask_mesh if loss_fn == "fvu" and self.cfg.filter_bos else None
                 ),
             )
             output = out.sae_out
@@ -627,6 +630,9 @@ class Trainer:
                 assert isinstance(output, Tensor)
             assert isinstance(out, ForwardOutput)
 
+            if self.cfg.loss_fn == "kl-fvu":
+                fvu_losses[name] = float(out.fvu.detach())
+
             # Update the did_fire mask
             latent_indices = out.latent_indices.flatten()
             if isinstance(latent_indices, DTensor):
@@ -634,15 +640,7 @@ class Trainer:
             did_fire[name][latent_indices] = True
             self.maybe_all_reduce(did_fire[name], "max")
 
-            if "fvu" in self.cfg.loss_fn:
-                avg_fvu[name] += float(out.fvu.detach() / denom)
-                if self.cfg.auxk_alpha > 0:
-                    avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
-
-                if self.cfg.loss_fn == "kl-fvu":
-                    fvu_losses[name] = out.fvu
-
-            if self.cfg.loss_fn in ("ce", "kl", "kl-fvu"):
+            if loss_fn in ("ce", "kl"):
                 # reshard outputs
                 if self.mesh is not None:
                     output = output.redistribute(
@@ -660,6 +658,10 @@ class Trainer:
                 # Replace the normal output with the SAE output
                 return (output, *aux_out) if aux_out is not None else output
             else:
+                avg_fvu[name] += float(out.fvu.detach() / denom)
+                if self.cfg.auxk_alpha > 0:
+                    avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
+
                 feature_link_l1 = 0.0
                 prev_modules = [mod for mod in runner.outputs.keys() if mod != name]
                 prev_modules = [self.saes[mod] for mod in prev_modules]
@@ -744,19 +746,25 @@ class Trainer:
 
             # Compute clean logits if using KL loss
             with self.implicit_replication():
-                # handles = [
-                #     mod.register_forward_hook(
-                #         record_outputs if name in self.cfg.hookpoints else None
-                #     )
-                #     for name, mod in name_to_module.items()
-                # ] if self.cfg.loss_fn == "kl-fvu" else []
+                handles = (
+                    [
+                        mod.register_forward_hook(
+                            partial(hook, force_loss_fn="fvu")
+                            if name in self.cfg.hookpoints
+                            else record_inputs
+                        )
+                        for name, mod in name_to_module.items()
+                    ]
+                    if self.cfg.loss_fn == "kl-fvu"
+                    else []
+                )
                 clean_logits = (
                     self.model(x).logits
                     if self.cfg.loss_fn in ("kl", "kl-fvu")
                     else None
                 )
-                # for handle in handles:
-                #     handle.remove()
+                for handle in handles:
+                    handle.remove()
                 clean_probs = (
                     clean_logits.softmax(dim=-1)
                     if self.cfg.loss_fn in ("kl", "kl-fvu")
@@ -766,7 +774,12 @@ class Trainer:
             # Forward pass on the model to get the next batch of activations
             handles = [
                 mod.register_forward_hook(
-                    hook if name in self.cfg.hookpoints else record_inputs
+                    partial(
+                        hook,
+                        force_loss_fn=None if self.cfg.loss_fn != "kl-fvu" else "kl",
+                    )
+                    if name in self.cfg.hookpoints
+                    else record_inputs
                 )
                 for name, mod in name_to_module.items()
             ]
@@ -788,6 +801,14 @@ class Trainer:
                                 * (clean_logits.log_softmax(dim=-1) - dirty_lps),
                                 dim=-1,
                             ).mean()
+                            acc_top1 = (
+                                (
+                                    clean_logits.argmax(dim=-1)
+                                    == dirty_lps.argmax(dim=-1)
+                                )
+                                .float()
+                                .mean()
+                            )
                             loss = kl
                             if self.cfg.loss_fn == "kl-fvu":
                                 if not isinstance(kl, DTensor):
@@ -796,7 +817,7 @@ class Trainer:
                                         self.mesh,
                                         [Shard(0), Replicate()],
                                     ).mean()
-                                fvu_loss = sum(fvu_losses.values())
+                                fvu_loss = sum(fvu_losses.values()) / len(fvu_losses)
                                 kl_coeff = self.cfg.kl_coeff
                                 if kl_coeff == 0.0:
                                     kl_coeff = (fvu_loss / kl).detach()
@@ -804,7 +825,9 @@ class Trainer:
                             loss.div(acc_steps).backward()
 
                             avg_kl += float(kl / denom)
+                            avg_acc_top1 += float(acc_top1 / denom)
                             avg_losses = avg_kl
+                            fvu_losses.clear()
                         case "fvu":
                             self.model(x)
                             avg_losses = dict(avg_fvu)
@@ -861,6 +884,7 @@ class Trainer:
                         info["ce_loss"] = avg_ce
                     elif self.cfg.loss_fn in ("kl", "kl-fvu"):
                         info["kl_loss"] = avg_kl
+                        info["acc_top1"] = avg_acc_top1
 
                     for name in self.saes:
                         mask = (
@@ -892,6 +916,7 @@ class Trainer:
                 avg_feature_link_l1.clear()
                 avg_ce = 0.0
                 avg_kl = 0.0
+                avg_acc_top1 = 0.0
 
             self.global_step += 1
             pbar.update()

@@ -76,8 +76,14 @@ if ! [ -z "$RESUME" ]; then
     SAVE_ARGS=""
 fi
 
-# N_DEVICES=2
-N_DEVICES=2
+if ! [ -z "$BF16" ]; then
+    extra="$extra --dtype bfloat16"
+    NAME=$NAME-bf16
+fi
+
+N_DEVICE_CHARS=${#CUDA_VISIBLE_DEVICES}
+N_DEVICES=$(( ($N_DEVICE_CHARS + 1) / 2 ))
+echo "Using $N_DEVICES devices"
 # WANDB_ENTITY=eleutherai uv run python -m sparsify \
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
 openai-community/gpt2 --ctx_len 128 --filter_bos=True \
