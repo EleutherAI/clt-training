@@ -55,41 +55,33 @@ class MatryoshkaRunner:
             indices=sliced_indices,
         )
         
-        # Store original weights and biases
+        # Get the original weights and biases
         original_W_dec = sliced_mid.sparse_coder.W_dec
         original_b_dec = sliced_mid.sparse_coder.b_dec
-        original_b_enc = sliced_mid.sparse_coder.encoder.bias
         
-        # Create sliced views without replacing parameters
+        # Create sliced views of the weights for this forward pass
         sliced_W_dec = original_W_dec[k_start:k_end, :]
         sliced_b_dec = original_b_dec  # Keep decoder bias shared globally
         
-        if original_b_enc is not None:
-            sliced_b_enc = original_b_enc[k_start:k_end]
-        else:
-            sliced_b_enc = None
-        
+        print(f"Matryoshka: Processing slice with k_start={k_start}, k_end={k_end}")
+        print(f"Matryoshka: Sliced activations shape: {sliced_activations.shape}")
+        print(f"Matryoshka: Sliced indices shape: {sliced_indices.shape}")
+        print(f"Matryoshka: Using sliced decoder weights: {sliced_W_dec.shape}")
         print(f"Matryoshka: Decoder bias kept shared globally: {original_b_dec.shape}")
-        if sliced_b_enc is not None:
-            print(f"Matryoshka: Using sliced encoder bias: {sliced_b_enc.shape} (k_start={k_start}, k_end={k_end})")
-        else:
-            print(f"Matryoshka: No encoder bias to slice (k_start={k_start}, k_end={k_end})")
         
-        # Perform decoding with sliced views
+        # Perform decoding with sliced weights
         if detach_grad:
             sliced_mid.detach()
         
-        # Use the sliced weights directly in the decode function
-        # We need to temporarily override the decode method to use our sliced weights
-        original_decode = sliced_mid.sparse_coder.decode
-        
-        def sliced_decode(top_acts, top_indices, index=0):
-            # Use sliced decoder weights
+        # Create a custom decode function that uses our sliced weights
+        def custom_decode(top_acts, top_indices, index=0):
+            # Use the sliced decoder weights for this forward pass
             y = decoder_impl(top_indices, top_acts.to(sliced_mid.sparse_coder.dtype), sliced_W_dec)
             return y + sliced_b_dec
         
         # Temporarily replace the decode method
-        sliced_mid.sparse_coder.decode = sliced_decode
+        original_decode = sliced_mid.sparse_coder.decode
+        sliced_mid.sparse_coder.decode = custom_decode
         
         try:
             out = sliced_mid(
@@ -100,7 +92,7 @@ class MatryoshkaRunner:
                 **kwargs,
             )
         finally:
-            # Restore original decode method
+            # Restore the original decode method
             sliced_mid.sparse_coder.decode = original_decode
         
         return out
