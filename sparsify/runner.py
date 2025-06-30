@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from dataclasses import replace
+from typing import List
 
 import torch
 from torch import Tensor
@@ -8,8 +11,8 @@ from torch.distributed.tensor.experimental import local_map
 from .sparse_coder import MidDecoder, SparseCoder
 from .utils import decoder_impl
 
+__all__ = ["MatryoshkaRunner"]
 
-from __future__ import annotations
 
 """Matryoshka‑style runner that *inherits all the cross‑layer coalescing tricks* of
 `CrossLayerRunner` while still performing the slice‑by‑slice Matryoshka loss
@@ -22,19 +25,6 @@ with a single line:
 runner = MatryoshkaRunner()  # instead of CrossLayerRunner
 ```
 """
-
-from dataclasses import replace
-from typing import List
-
-import torch
-from torch import Tensor
-from torch.distributed.tensor import DTensor
-from torch.distributed.tensor.experimental import local_map
-
-from .sparse_coder import MidDecoder, SparseCoder
-
-__all__ = ["MatryoshkaRunner"]
-
 
 class MatryoshkaRunner:
     """Runs Matryoshka training *and* cross‑layer coalescing in one place."""
