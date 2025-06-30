@@ -224,6 +224,10 @@ class MatryoshkaRunner:
         metrics are replaced with the *mean* across all slices, matching the
         description in the paper.
         """
+        print(f"\n{'='*60}")
+        print(f"MatryoshkaRunner: Processing {module_name}")
+        print(f"{'='*60}")
+        
         # --------------------------------------------------------------
         # Determine k‑ladder boundaries
         # --------------------------------------------------------------
@@ -231,6 +235,12 @@ class MatryoshkaRunner:
         cumulative = [0]
         for k in k_values:
             cumulative.append(cumulative[-1] + k)
+        
+        print(f"Matryoshka k-values: {k_values}")
+        print(f"Matryoshka cumulative boundaries: {cumulative}")
+        print(f"Total features: {cumulative[-1]}")
+        print(f"Original activations shape: {mid_out.latent_acts.shape}")
+        print(f"Original indices shape: {mid_out.latent_indices.shape}")
 
         slice_outputs = []
         total_fvu = mid_out.latent_acts.new_tensor(0.0)
@@ -240,12 +250,23 @@ class MatryoshkaRunner:
         # --------------------------------------------------------------
         # Run every slice
         # --------------------------------------------------------------
+        print(f"\n{'='*40}")
+        print(f"Processing {len(k_values)} Matryoshka slices:")
+        print(f"{'='*40}")
+        
         for i in range(len(k_values)):
             k_start, k_end = cumulative[i], cumulative[i + 1]
+            k_size = k_end - k_start
+            
+            print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_size} (indices {k_start}:{k_end}) ---")
 
             activations = mid_out.latent_acts[:, k_start:k_end]
             indices = mid_out.latent_indices[:, k_start:k_end]
             sliced_mid = mid_out.copy(activations=activations, indices=indices)
+            
+            print(f"  Slice activations shape: {activations.shape}")
+            print(f"  Slice indices shape: {indices.shape}")
+            print(f"  Slice indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
 
             out_slice = self._decode_slice(
                 sliced_mid,
@@ -255,6 +276,12 @@ class MatryoshkaRunner:
                 advance=(advance and i == len(k_values) - 1),  # free only on last
                 **kwargs,
             )
+
+            print(f"  Slice {i+1} results:")
+            print(f"    FVU: {out_slice.fvu.item():.6f}")
+            print(f"    AuxK: {out_slice.auxk_loss.item():.6f}")
+            print(f"    Multi-TopK: {out_slice.multi_topk_fvu.item():.6f}")
+            print(f"    Output shape: {out_slice.sae_out.shape}")
 
             slice_outputs.append(out_slice)
             total_fvu += out_slice.fvu
@@ -269,11 +296,29 @@ class MatryoshkaRunner:
         avg_aux = total_aux / n
         avg_multi = total_multi / n
 
+        print(f"\n{'='*40}")
+        print(f"Loss Aggregation Results:")
+        print(f"{'='*40}")
+        print(f"Number of slices: {n}")
+        print(f"Total FVU: {total_fvu.item():.6f}")
+        print(f"Total AuxK: {total_aux.item():.6f}")
+        print(f"Total Multi-TopK: {total_multi.item():.6f}")
+        print(f"Average FVU: {avg_fvu.item():.6f}")
+        print(f"Average AuxK: {avg_aux.item():.6f}")
+        print(f"Average Multi-TopK: {avg_multi.item():.6f}")
+
         # --------------------------------------------------------------
         # Concatenate all slices back together for full activations/indices
         # --------------------------------------------------------------
         all_activations = torch.cat([out.latent_acts for out in slice_outputs], dim=1)
         all_indices = torch.cat([out.latent_indices for out in slice_outputs], dim=1)
+        
+        print(f"\n{'='*40}")
+        print(f"Final Output Construction:")
+        print(f"{'='*40}")
+        print(f"Concatenated activations shape: {all_activations.shape}")
+        print(f"Concatenated indices shape: {all_indices.shape}")
+        print(f"Concatenated indices range: {all_indices.min().item():.0f} to {all_indices.max().item():.0f}")
         
         # Use the largest slice's output as the base, but replace activations/indices
         main_output = slice_outputs[-1]
@@ -285,6 +330,13 @@ class MatryoshkaRunner:
             auxk_loss=avg_aux, 
             multi_topk_fvu=avg_multi
         )
+        
+        print(f"Final output activations shape: {combined.latent_acts.shape}")
+        print(f"Final output indices shape: {combined.latent_indices.shape}")
+        print(f"Final output sae_out shape: {combined.sae_out.shape}")
+        print(f"Final losses - FVU: {combined.fvu.item():.6f}, AuxK: {combined.auxk_loss.item():.6f}, Multi-TopK: {combined.multi_topk_fvu.item():.6f}")
+        print(f"{'='*60}\n")
+        
         return combined
 
     # ------------------------------------------------------------------
