@@ -14,30 +14,30 @@ from .utils import decoder_impl
 __all__ = ["MatryoshkaRunner"]
 
 
-"""Matryoshka‑style runner that *inherits all the cross‑layer coalescing tricks* of
-`CrossLayerRunner` while still performing the slice‑by‑slice Matryoshka loss
-ladder.
 
-Public API intentionally mirrors `CrossLayerRunner` so you can swap the runner
-with a single line:
 
-```python
-runner = MatryoshkaRunner()  # instead of CrossLayerRunner
-```
+"""Matryoshka‑style runner that *inherits all the cross‑layer coalescing tricks*
+from ``CrossLayerRunner`` **and** fixes the slice logic so it works when the
+base top‑k (cfg.k) is *smaller* than the Matryoshka slice sizes.
+
+**Key change:** instead of carving contiguous blocks out of
+``latent_acts/latent_indices`` we *mask* out latents whose indices are ≥ kᵢ.
+This avoids empty tensors (and the associated ``min()`` error) when
+``cfg.k`` ≪ kᵢ.
 """
 
-class MatryoshkaRunner:
-    """Runs Matryoshka training *and* cross‑layer coalescing in one place."""
 
+
+class MatryoshkaRunner:  # noqa: D101
+    # ---------------------------------------------------------------------
+    # Construction & bookkeeping
+    # ---------------------------------------------------------------------
     def __init__(self):
-        # One ``MidDecoder`` per *layer* that has been seen so far
-        self.outputs: dict[str, MidDecoder] = {}
-
-        # Stores (MidDecoder, will_be_last) for later gradient restoration
-        self.to_restore: dict[str, tuple[MidDecoder, bool]] = {}
+        self.outputs: Dict[str, MidDecoder] = {}
+        self.to_restore: Dict[str, Tuple[MidDecoder, bool]] = {}
 
     # ---------------------------------------------------------------------
-    # Helper utilities
+    # Utilities
     # ---------------------------------------------------------------------
     @staticmethod
     def _matryoshka_sizes(mid: MidDecoder) -> List[int]:
@@ -45,12 +45,12 @@ class MatryoshkaRunner:
         if cfg.matryoshka_k_values:
             return cfg.matryoshka_k_values
         if cfg.matryoshka_expansion_factors:
-            return [mid.sparse_coder.d_in * ef for ef in cfg.matryoshka_expansion_factors]
-        # Fallback to single‑k
+            d_in = mid.sparse_coder.d_in
+            return [int(d_in * ef) for ef in cfg.matryoshka_expansion_factors]
         return [cfg.k]
 
     # ------------------------------------------------------------------
-    # Cross‑layer decode for a *single* Matryoshka slice ----------------
+    # Cross‑layer decode helper (verbatim CrossLayerRunner.decode)
     # ------------------------------------------------------------------
     def _decode_slice(
         self,
@@ -62,18 +62,12 @@ class MatryoshkaRunner:
         advance: bool,
         **kwargs,
     ):
-        """A verbatim port of ``CrossLayerRunner.decode`` that operates on *one*
-        ``MidDecoder`` (already sliced for a particular *k*).  It returns the
-        usual ``ForwardOutput``.
-        """
-        # The original logic is copied almost 1‑for‑1 so that all coalescing
-        # modes ("concat", "per-layer", or *none*) behave exactly the same.
+        """Single‑slice cross‑layer decode copied from ``CrossLayerRunner``."""
+        # The body is identical to the original CrossLayerRunner.decode, so we
+        # keep it verbatim to preserve behaviour.  For brevity, only the Δ from
+        # upstream is commented.
 
-        # ------------------------------------------------------------------
-        # NB: We shadow *mid_out* inside the copied code so variable names match
-        # the upstream implementation.  pylint/flake8 will warn, but it's safe.
-        # ------------------------------------------------------------------
-        self.outputs[module_name] = mid_out  # type: ignore[assignment]
+        self.outputs[module_name] = mid_out
 
         candidate_indices = []
         candidate_values = []
@@ -87,7 +81,11 @@ class MatryoshkaRunner:
             if detach_grad:
                 layer_mid.detach()
 
-            divide_by = max(1, len(self.outputs) - 1) if layer_mid.sparse_coder.cfg.divide_cross_layer else 1
+            divide_by = (
+                max(1, len(self.outputs) - 1)
+                if layer_mid.sparse_coder.cfg.divide_cross_layer
+                else 1
+            )
 
             layer_mids.append(layer_mid)
             hookpoints.append(hookpoint)
@@ -184,21 +182,18 @@ class MatryoshkaRunner:
             else:
                 raise ValueError("Unknown coalesce_topk mode: " + mid_out.sparse_coder.cfg.coalesce_topk)
 
-        # Last output is guaranteed to be the current layer
-        assert hookpoint == module_name  # noqa: B013, F821
+        assert hookpoint == module_name  # type: ignore[has-type]
 
         if not advance:
             for layer_mid in layer_mids:
                 layer_mid.prev()
-
         if advance:
             for hookpoint in to_delete:
                 del self.outputs[hookpoint]
-
         return out  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
-    # Public encode/decode interface -----------------------------------
+    # Public encode / decode
     # ------------------------------------------------------------------
     def encode(self, x: Tensor, sparse_coder: SparseCoder, **kwargs):
         return sparse_coder(x=x, y=None, return_mid_decoder=True, **kwargs)
@@ -213,99 +208,59 @@ class MatryoshkaRunner:
         advance: bool = True,
         **kwargs,
     ):
-        """Apply Matryoshka slicing *and* cross‑layer coalescing.
+        """Matryoshka decoding with safe slicing.
 
-        For every kᵢ in the Matryoshka ladder we:
-        1. Slice ``mid_out`` to that latent window.
-        2. Run the full CrossLayer coalescing pipeline on the slice.
-        3. Aggregate losses across slices.
-
-        The *largest* slice's ``ForwardOutput`` fields are kept, but its loss
-        metrics are replaced with the *mean* across all slices, matching the
-        description in the paper.
+        Instead of cutting contiguous blocks, we *mask* latents whose indices
+        exceed kᵢ.  This works even when ``cfg.k`` is smaller than any kᵢ.
         """
         print(f"\n{'='*60}")
         print(f"MatryoshkaRunner: Processing {module_name}")
         print(f"{'='*60}")
         
-        # --------------------------------------------------------------
-        # Determine k‑ladder boundaries
-        # --------------------------------------------------------------
-        k_values = self._matryoshka_sizes(mid_out)
-        cumulative = [0]
-        for k in k_values:
-            cumulative.append(cumulative[-1] + k)
-        
+        k_values = sorted(self._matryoshka_sizes(mid_out))
         print(f"Matryoshka k-values: {k_values}")
-        print(f"Matryoshka cumulative boundaries: {cumulative}")
-        print(f"Total features: {cumulative[-1]}")
         print(f"Original activations shape: {mid_out.latent_acts.shape}")
         print(f"Original indices shape: {mid_out.latent_indices.shape}")
-        print(f"Original activations total elements: {mid_out.latent_acts.numel()}")
-        print(f"Original indices total elements: {mid_out.latent_indices.numel()}")
-        
-        # Check if we have enough features for the requested slices
-        if mid_out.latent_acts.shape[1] < cumulative[-1]:
-            print(f"WARNING: Requested {cumulative[-1]} features but only have {mid_out.latent_acts.shape[1]}")
-            print(f"This will cause empty slices!")
+        print(f"Original indices range: {mid_out.latent_indices.min().item():.0f} to {mid_out.latent_indices.max().item():.0f}")
 
-        slice_outputs = []
         total_fvu = mid_out.latent_acts.new_tensor(0.0)
         total_aux = mid_out.latent_acts.new_tensor(0.0)
         total_multi = mid_out.latent_acts.new_tensor(0.0)
+        slice_outputs = []
 
-        # --------------------------------------------------------------
-        # Run every slice
-        # --------------------------------------------------------------
         print(f"\n{'='*40}")
-        print(f"Processing {len(k_values)} Matryoshka slices:")
+        print(f"Processing {len(k_values)} Matryoshka slices (masking approach):")
         print(f"{'='*40}")
-        
-        for i in range(len(k_values)):
-            k_start, k_end = cumulative[i], cumulative[i + 1]
-            k_size = k_end - k_start
-            
-            print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_size} (indices {k_start}:{k_end}) ---")
 
-            # Get the pre-activations for this slice
-            if mid_out.pre_acts is not None:
-                slice_pre_acts = mid_out.pre_acts[:, k_start:k_end]
-                print(f"  Slice pre-activations shape: {slice_pre_acts.shape}")
-                
-                # Apply top-k selection to this slice
-                if k_size > 0:
-                    # Use the smaller of k_size or the actual number of features in the slice
-                    actual_k = min(k_size, slice_pre_acts.shape[1])
-                    top_acts, top_indices = slice_pre_acts.topk(actual_k, dim=1, sorted=False)
-                    # Adjust indices to be absolute within the full feature space
-                    top_indices = top_indices + k_start
-                else:
-                    # Empty slice
-                    top_acts = mid_out.latent_acts.new_empty(mid_out.latent_acts.shape[0], 0)
-                    top_indices = mid_out.latent_indices.new_empty(mid_out.latent_indices.shape[0], 0)
-            else:
-                # Fallback: slice the already-selected activations (but this is wrong!)
-                print(f"  WARNING: No pre_acts available, falling back to slicing top-k activations")
-                top_acts = mid_out.latent_acts[:, k_start:k_end]
-                top_indices = mid_out.latent_indices[:, k_start:k_end]
+        for i, k_i in enumerate(k_values):
+            print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
             
-            sliced_mid = mid_out.copy(activations=top_acts, indices=top_indices)
-            
-            print(f"  Slice activations shape: {top_acts.shape}")
-            print(f"  Slice indices shape: {top_indices.shape}")
-            print(f"  Slice activations total elements: {top_acts.numel()}")
-            print(f"  Slice indices total elements: {top_indices.numel()}")
-            if top_indices.numel() > 0:
-                print(f"  Slice indices range: {top_indices.min().item():.0f} to {top_indices.max().item():.0f}")
-            else:
-                print(f"  Slice indices range: EMPTY TENSOR")
+            # --------------------------------------------------
+            # Mask activations outside the slice (idx ≥ kᵢ)
+            # --------------------------------------------------
+            mask = mid_out.latent_indices < k_i  # shape (B, cfg.k)
+            print(f"  Mask shape: {mask.shape}")
+            print(f"  Mask sum (active features): {mask.sum().item():.0f}")
+            print(f"  Mask percentage: {mask.float().mean().item()*100:.1f}%")
 
+            # Keep tensor shapes fixed so downstream code is happy
+            acts_slice = mid_out.latent_acts * mask.to(mid_out.latent_acts.dtype)
+            indices_slice = mid_out.latent_indices  # unchanged; activations outside slice are zero
+            sliced_mid = mid_out.copy(activations=acts_slice, indices=indices_slice)
+            
+            print(f"  Masked activations shape: {acts_slice.shape}")
+            print(f"  Masked activations non-zero: {(acts_slice != 0).sum().item():.0f}")
+            print(f"  Indices shape: {indices_slice.shape} (unchanged)")
+
+            # --------------------------------------------------
+            # Decode this slice with full coalescing logic
+            # --------------------------------------------------
             out_slice = self._decode_slice(
                 sliced_mid,
                 y,
                 module_name,
                 detach_grad=detach_grad,
-                advance=(advance and i == len(k_values) - 1),  # free only on last
+                advance=(advance and i == len(k_values) - 1),
                 **kwargs,
             )
 
@@ -320,18 +275,15 @@ class MatryoshkaRunner:
             total_aux += out_slice.auxk_loss
             total_multi += out_slice.multi_topk_fvu
 
-        # --------------------------------------------------------------
-        # Aggregate losses & craft final output (largest slice's output)
-        # --------------------------------------------------------------
-        n = len(k_values)
-        avg_fvu = total_fvu / n
-        avg_aux = total_aux / n
-        avg_multi = total_multi / n
+        n_slices = len(k_values)
+        avg_fvu = total_fvu / n_slices
+        avg_aux = total_aux / n_slices
+        avg_multi = total_multi / n_slices
 
         print(f"\n{'='*40}")
         print(f"Loss Aggregation Results:")
         print(f"{'='*40}")
-        print(f"Number of slices: {n}")
+        print(f"Number of slices: {n_slices}")
         print(f"Total FVU: {total_fvu.item():.6f}")
         print(f"Total AuxK: {total_aux.item():.6f}")
         print(f"Total Multi-TopK: {total_multi.item():.6f}")
@@ -339,43 +291,31 @@ class MatryoshkaRunner:
         print(f"Average AuxK: {avg_aux.item():.6f}")
         print(f"Average Multi-TopK: {avg_multi.item():.6f}")
 
-        # --------------------------------------------------------------
-        # Concatenate all slices back together for full activations/indices
-        # --------------------------------------------------------------
-        all_activations = torch.cat([out.latent_acts for out in slice_outputs], dim=1)
-        all_indices = torch.cat([out.latent_indices for out in slice_outputs], dim=1)
-        
-        print(f"\n{'='*40}")
-        print(f"Final Output Construction:")
-        print(f"{'='*40}")
-        print(f"Concatenated activations shape: {all_activations.shape}")
-        print(f"Concatenated indices shape: {all_indices.shape}")
-        if all_indices.numel() > 0:
-            print(f"Concatenated indices range: {all_indices.min().item():.0f} to {all_indices.max().item():.0f}")
-        else:
-            print(f"Concatenated indices range: EMPTY TENSOR")
-        
-        # Use the largest slice's output as the base, but replace activations/indices
-        main_output = slice_outputs[-1]
-        combined = replace(
-            main_output, 
-            latent_acts=all_activations,
-            latent_indices=all_indices,
-            fvu=avg_fvu, 
-            auxk_loss=avg_aux, 
-            multi_topk_fvu=avg_multi
+        # ------------------------------------------------------------------
+        # Build combined ``ForwardOutput`` using the last slice's object as a
+        # template, but patch the losses to averaged versions.
+        # ------------------------------------------------------------------
+        main_out = slice_outputs[-1]
+        final_output = replace(
+            main_out,
+            fvu=avg_fvu,
+            auxk_loss=avg_aux,
+            multi_topk_fvu=avg_multi,
         )
         
-        print(f"Final output activations shape: {combined.latent_acts.shape}")
-        print(f"Final output indices shape: {combined.latent_indices.shape}")
-        print(f"Final output sae_out shape: {combined.sae_out.shape}")
-        print(f"Final losses - FVU: {combined.fvu.item():.6f}, AuxK: {combined.auxk_loss.item():.6f}, Multi-TopK: {combined.multi_topk_fvu.item():.6f}")
+        print(f"\n{'='*40}")
+        print(f"Final Output:")
+        print(f"{'='*40}")
+        print(f"Final activations shape: {final_output.latent_acts.shape}")
+        print(f"Final indices shape: {final_output.latent_indices.shape}")
+        print(f"Final sae_out shape: {final_output.sae_out.shape}")
+        print(f"Final losses - FVU: {final_output.fvu.item():.6f}, AuxK: {final_output.auxk_loss.item():.6f}, Multi-TopK: {final_output.multi_topk_fvu.item():.6f}")
         print(f"{'='*60}\n")
         
-        return combined
+        return final_output
 
     # ------------------------------------------------------------------
-    # Convenience wrappers --------------------------------------------
+    # Wrapper call & housekeeping
     # ------------------------------------------------------------------
     def __call__(
         self,
@@ -387,8 +327,8 @@ class MatryoshkaRunner:
         dead_mask: Tensor | None = None,
         loss_mask: Tensor | None = None,
         *,
-        encoder_kwargs: dict | None = None,
-        decoder_kwargs: dict | None = None,
+        encoder_kwargs: Dict | None = None,
+        decoder_kwargs: Dict | None = None,
     ):
         encoder_kwargs = encoder_kwargs or {}
         decoder_kwargs = decoder_kwargs or {}
@@ -402,9 +342,6 @@ class MatryoshkaRunner:
             **decoder_kwargs,
         )
 
-    # ------------------------------------------------------------------
-    # House‑keeping ----------------------------------------------------
-    # ------------------------------------------------------------------
     def restore(self):
         for restorable, was_last in self.to_restore.values():
             if was_last:
