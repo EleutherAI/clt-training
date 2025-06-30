@@ -208,7 +208,7 @@ class FusedEncoder(torch.autograd.Function):
         if ctx.needs_input_grad[1]:
             # Accumulate contributions into the correct rows of grad_weight.
             _, D = input.shape
-            if not isinstance(grad_weight, dtensor.DTensor):
+            if not isinstance(grad_values, dtensor.DTensor):
                 grad_weight = triton_sparse_transpose_dense_matmul(
                     indices,
                     grad_values.float(),
@@ -216,7 +216,7 @@ class FusedEncoder(torch.autograd.Function):
                     N=weight.shape[0],
                 )
             else:
-                mesh = grad_weight.device_mesh
+                mesh = grad_values.device_mesh
                 local_grad_weight = torch.zeros_like(weight.to_local())
                 gathered_input = input.redistribute(
                     mesh, (dtensor.Replicate(), dtensor.Replicate())

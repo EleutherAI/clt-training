@@ -399,7 +399,10 @@ class SparseCoder(nn.Module):
                     (self.d_in,),
                     dtype=dtype,
                     device_mesh=mesh,
-                    placements=[dtensor.Replicate(), dtensor.Shard(0)],
+                    placements=[
+                        dtensor.Replicate(),
+                        dtensor.Shard(0) if cfg.tp_output else dtensor.Replicate(),
+                    ],
                 )
             else:
                 result = torch.zeros(self.d_in, device=device, dtype=dtype)
