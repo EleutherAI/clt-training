@@ -69,6 +69,9 @@ line-length = 88
 # that the import is either added to the module's __all__ symbol
 ignore-init-module-imports = true
 
+[tool.black]
+force_exclude = "/scripts/"
+
 [tool.semantic_release]
 version_variables = ["sparsify/__init__.py:__version__"]
 version_toml = ["pyproject.toml:project.version"]

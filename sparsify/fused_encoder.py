@@ -4,7 +4,11 @@ import torch
 import torch.distributed.tensor as dtensor
 import torch.nn.functional as F
 
-from .kernels import triton_sparse_transpose_dense_matmul
+from .kernels import (
+    COODecoder,
+    triton_coo_sparse_dense_matmul,
+    triton_sparse_transpose_dense_matmul,
+)
 from .nanogpt import linear
 from .utils import decoder_impl
 
@@ -20,11 +24,8 @@ class EncoderOutput(NamedTuple):
     """Activations before the top-k selection."""
 
 
-CONTRIB_BATCH_SIZE = 4096
-
-
 class FusedEncoder(torch.autograd.Function):
-    @torch.compile
+    # @torch.compile
     @staticmethod
     def forward(
         ctx,
@@ -44,31 +45,7 @@ class FusedEncoder(torch.autograd.Function):
         preacts = F.relu(linear(input, weight, bias, use_fp8))
 
         if activation == "batchtopk":
-            expected_k = k * preacts.shape[0]
-            if isinstance(preacts, dtensor.DTensor):
-                mesh = preacts.device_mesh
-                local_preacts = preacts.to_local()
-                local_values = torch.topk(
-                    local_preacts.flatten(), expected_k, sorted=False
-                ).values
-                all_values = dtensor.DTensor.from_local(
-                    local_values,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Shard(0)),
-                )
-                all_values = all_values.redistribute(
-                    mesh, (dtensor.Shard(0), dtensor.Replicate())
-                )
-                combined_values = all_values.to_local()
-                threshold = torch.topk(
-                    combined_values, expected_k, sorted=False
-                ).values.min()
-                local_preacts[local_preacts < threshold] = 0
-            else:
-                threshold = torch.topk(
-                    preacts.flatten(), expected_k, sorted=False
-                ).values[-1]
-                preacts[preacts < threshold] = 0
+            preacts = batch_topk(preacts, k)
             k *= 4
             activation = "topk"
 
@@ -166,18 +143,20 @@ class FusedEncoder(torch.autograd.Function):
             raise ValueError(f"Unknown activation: {activation}")
 
         # Save tensors needed for the backward pass
-        ctx.save_for_backward(input, weight, bias, indices)
+        ctx.save_for_backward(input, weight, bias, indices, values)
         ctx.k = k
         ctx.activation = activation
         return values, indices, preacts
 
-    @torch.compile
+    # @torch.compile
     @staticmethod
     @torch.no_grad()
     def backward(ctx, grad_values, grad_indices, grad_preacts):
-        input, weight, bias, indices = ctx.saved_tensors
+        input, weight, bias, indices, values = ctx.saved_tensors
         grad_input = grad_weight = grad_bias = None
         activation = ctx.activation
+
+        grad_values = grad_values * (values > 0).to(grad_values)
 
         # --- Grad w.r.t. input ---
         if ctx.needs_input_grad[0]:
@@ -227,25 +206,18 @@ class FusedEncoder(torch.autograd.Function):
 
         # --- Grad w.r.t. weight ---
         if ctx.needs_input_grad[1]:
-            grad_weight = torch.zeros_like(weight)
-
             # Accumulate contributions into the correct rows of grad_weight.
             _, D = input.shape
             if not isinstance(grad_weight, dtensor.DTensor):
-                # Compute contributions from each top-k element:
-                # computed as grad_values * input for each top-k location.
-                contributions = grad_values.unsqueeze(2) * input.unsqueeze(1)
-                # Flatten contributions to shape (N*k, D)
-                contributions = contributions.reshape(-1, D)
-                # print(grad_weight)  # (M, D); TP sharded along dim=0
-                # print(indices.flatten())  # (N*k); DP sharded along dim=0
-                # print(contributions)  # (N*k, D); DP sharded along dim=0
-                grad_weight.index_add_(
-                    0, indices.flatten(), contributions.type_as(weight)
+                grad_weight = triton_sparse_transpose_dense_matmul(
+                    indices,
+                    grad_values.float(),
+                    input,
+                    N=weight.shape[0],
                 )
             else:
                 mesh = grad_weight.device_mesh
-                local_grad_weight = grad_weight.to_local()
+                local_grad_weight = torch.zeros_like(weight.to_local())
                 gathered_input = input.redistribute(
                     mesh, (dtensor.Replicate(), dtensor.Replicate())
                 ).to_local()
@@ -281,8 +253,97 @@ class FusedEncoder(torch.autograd.Function):
                     gathered_input,
                     N=local_grad_weight.shape[0],
                 )
+                grad_weight = dtensor.DTensor.from_local(
+                    local_grad_weight,
+                    mesh,
+                    (dtensor.Replicate(), dtensor.Shard(0)),
+                )
 
         # The k parameter is an int, so return None for its gradient.
+        return grad_input, grad_weight, grad_bias, None, None, None
+
+
+def batch_topk(preacts, k, return_indices=False):
+    expected_k = k * preacts.shape[0]
+    if isinstance(preacts, dtensor.DTensor):
+        mesh = preacts.device_mesh
+        local_preacts = preacts.to_local()
+        local_values = torch.topk(
+            local_preacts.flatten(), expected_k, sorted=False
+        ).values
+        all_values = dtensor.DTensor.from_local(
+            local_values,
+            mesh,
+            (dtensor.Shard(0), dtensor.Shard(0)),
+        )
+        all_values = all_values.redistribute(
+            mesh, (dtensor.Shard(0), dtensor.Replicate())
+        )
+        combined_values = all_values.to_local()
+        values, indices = torch.topk(combined_values, expected_k, sorted=False)
+        if return_indices:
+            return values, indices
+        else:
+            threshold = values.min()
+            local_preacts[local_preacts < threshold] = 0
+            return local_preacts
+    else:
+        values, indices = torch.topk(preacts.flatten(), expected_k, sorted=False)
+        if return_indices:
+            return values, indices
+        else:
+            threshold = values.min()
+            preacts[preacts < threshold] = 0
+            return preacts
+
+
+class FusedEncoderCOO(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, weight, bias, k: int, use_fp8: bool = False):
+        """Forward pass for BatchTopK with COO sparse kernels."""
+        preacts = F.relu(linear(input, weight, bias, use_fp8))
+        preact_values, preact_indices = preacts.topk(k * 4, dim=-1, sorted=False)
+        values, indices = batch_topk(preact_values, k, return_indices=True)
+        indices = preact_indices.flatten()[indices]
+        row_indices, col_indices = (
+            indices // preacts.shape[1],
+            indices % preacts.shape[1],
+        )
+        ctx.save_for_backward(input, weight, bias, row_indices, col_indices, values)
+        return values, row_indices, col_indices
+
+    @staticmethod
+    def backward(ctx, grad_values, _grad_row_indices, _grad_col_indices):
+        input, weight, bias, row_indices, col_indices, values = ctx.saved_tensors
+        grad_values = grad_values * (values > 0).to(grad_values)
+        grad_input = grad_weight = grad_bias = None
+
+        # --- Grad w.r.t. input ---
+        if ctx.needs_input_grad[0]:
+            grad_input = COODecoder.apply(
+                row_indices,
+                col_indices,
+                grad_values,
+                weight,
+            )
+
+        # --- Grad w.r.t. bias ---
+        if bias is not None and ctx.needs_input_grad[2]:
+            grad_bias = torch.zeros_like(bias)
+            grad_bias.index_add_(
+                0, row_indices.flatten(), grad_values.flatten().type_as(bias)
+            )
+            grad_bias = grad_bias
+
+        # --- Grad w.r.t. weight ---
+        if ctx.needs_input_grad[1]:
+            grad_weight = triton_coo_sparse_dense_matmul(
+                torch.stack([row_indices, col_indices]),
+                grad_values.float(),
+                input,
+                N=weight.shape[0],
+            )
+
         return grad_input, grad_weight, grad_bias, None, None, None
 
 
