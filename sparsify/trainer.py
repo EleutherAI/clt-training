@@ -491,6 +491,7 @@ class Trainer:
         cached_outputs = {}
         grad_scalers = {}
         runner = CrossLayerRunner()
+        matryoshka_runner = MatryoshkaRunner()
 
         def record_inputs(module: nn.Module, inputs, outputs):
             if isinstance(inputs, tuple):
@@ -610,7 +611,7 @@ class Trainer:
 
             # Choose the appropriate runner based on whether matryoshka is enabled
             if self.cfg.sae.matryoshka:
-                current_runner = MatryoshkaRunner()
+                current_runner = matryoshka_runner
             else:
                 current_runner = runner
 
@@ -746,6 +747,7 @@ class Trainer:
             bos_mask = x == self.model.config.bos_token_id
 
             runner.reset()
+            matryoshka_runner.reset()
 
             # Bookkeeping for dead feature detection
             N = x.numel()

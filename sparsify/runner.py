@@ -9,180 +9,297 @@ from .sparse_coder import MidDecoder, SparseCoder
 from .utils import decoder_impl
 
 
+cfrom __future__ import annotations
+
+"""Matryoshka‑style runner that *inherits all the cross‑layer coalescing tricks* of
+`CrossLayerRunner` while still performing the slice‑by‑slice Matryoshka loss
+ladder.
+
+Public API intentionally mirrors `CrossLayerRunner` so you can swap the runner
+with a single line:
+
+```python
+runner = MatryoshkaRunner()  # instead of CrossLayerRunner
+```
+"""
+
+from dataclasses import replace
+from typing import List
+
+import torch
+from torch import Tensor
+from torch.distributed.tensor import DTensor
+from torch.distributed.tensor.experimental import local_map
+
+from .sparse_coder import MidDecoder, SparseCoder
+
+__all__ = ["MatryoshkaRunner"]
+
+
 class MatryoshkaRunner:
-    """
-    Runner for Matryoshka-style transcoder training.
-    Performs multiple forward passes with different encoder/decoder slices
-    and combines the losses.
-    """
-    
+    """Runs Matryoshka training *and* cross‑layer coalescing in one place."""
+
     def __init__(self):
-        self.outputs = {}
-        self.to_restore = {}
-    
-    def encode(self, x: Tensor, sparse_coder: SparseCoder, **kwargs):
-        """Encode using the full encoder and return MidDecoder."""
-        out_mid = sparse_coder(
-            x=x,
-            y=None,
-            return_mid_decoder=True,
-            **kwargs,
-        )
-        return out_mid
-    
-    def decode_slice(
+        # One ``MidDecoder`` per *layer* that has been seen so far
+        self.outputs: dict[str, MidDecoder] = {}
+
+        # Stores (MidDecoder, will_be_last) for later gradient restoration
+        self.to_restore: dict[str, tuple[MidDecoder, bool]] = {}
+
+    # ---------------------------------------------------------------------
+    # Helper utilities
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _matryoshka_sizes(mid: MidDecoder) -> List[int]:
+        cfg = mid.sparse_coder.cfg
+        if cfg.matryoshka_k_values:
+            return cfg.matryoshka_k_values
+        if cfg.matryoshka_expansion_factors:
+            return [mid.sparse_coder.d_in * ef for ef in cfg.matryoshka_expansion_factors]
+        # Fallback to single‑k
+        return [cfg.k]
+
+    # ------------------------------------------------------------------
+    # Cross‑layer decode for a *single* Matryoshka slice ----------------
+    # ------------------------------------------------------------------
+    def _decode_slice(
         self,
         mid_out: MidDecoder,
         y: Tensor,
         module_name: str,
-        k_start: int,
-        k_end: int,
-        detach_grad: bool = False,
+        *,
+        detach_grad: bool,
+        advance: bool,
         **kwargs,
     ):
-        """Decode using a slice of the encoder/decoder."""
-        # Create a copy of the MidDecoder with sliced activations and indices
-        sliced_activations = mid_out.latent_acts[:, k_start:k_end]
-        sliced_indices = mid_out.latent_indices[:, k_start:k_end]
-        
-        # Adjust indices to be relative to the slice
-        if k_start > 0:
-            sliced_indices = sliced_indices - k_start
-        
-        # Create a temporary MidDecoder for this slice
-        sliced_mid = mid_out.copy(
-            activations=sliced_activations,
-            indices=sliced_indices,
-        )
-        
-        # Get the original weights and biases
-        original_W_dec = sliced_mid.sparse_coder.W_dec
-        original_b_dec = sliced_mid.sparse_coder.b_dec
-        
-        # Create sliced views of the weights for this forward pass
-        sliced_W_dec = original_W_dec[k_start:k_end, :]
-        sliced_b_dec = original_b_dec  # Keep decoder bias shared globally
-        
-        print(f"Matryoshka: Processing slice with k_start={k_start}, k_end={k_end}")
-        print(f"Matryoshka: Sliced activations shape: {sliced_activations.shape}")
-        print(f"Matryoshka: Sliced indices shape: {sliced_indices.shape}")
-        print(f"Matryoshka: Using sliced decoder weights: {sliced_W_dec.shape}")
-        print(f"Matryoshka: Decoder bias kept shared globally: {original_b_dec.shape}")
-        
-        # Perform decoding with sliced weights
-        if detach_grad:
-            sliced_mid.detach()
-        
-        # Create a custom decode function that uses our sliced weights
-        def custom_decode(top_acts, top_indices, index=0):
-            # Use the sliced decoder weights for this forward pass
-            y = decoder_impl(top_indices, top_acts.to(sliced_mid.sparse_coder.dtype), sliced_W_dec)
-            return y + sliced_b_dec
-        
-        # Temporarily replace the decode method
-        original_decode = sliced_mid.sparse_coder.decode
-        sliced_mid.sparse_coder.decode = custom_decode
-        
-        try:
-            out = sliced_mid(
-                y,
-                addition=0,
-                no_extras=False,
-                denormalize=True,
-                **kwargs,
-            )
-        finally:
-            # Restore the original decode method
-            sliced_mid.sparse_coder.decode = original_decode
-        
-        return out
-    
+        """A verbatim port of ``CrossLayerRunner.decode`` that operates on *one*
+        ``MidDecoder`` (already sliced for a particular *k*).  It returns the
+        usual ``ForwardOutput``.
+        """
+        # The original logic is copied almost 1‑for‑1 so that all coalescing
+        # modes ("concat", "per-layer", or *none*) behave exactly the same.
+
+        # ------------------------------------------------------------------
+        # NB: We shadow *mid_out* inside the copied code so variable names match
+        # the upstream implementation.  pylint/flake8 will warn, but it's safe.
+        # ------------------------------------------------------------------
+        self.outputs[module_name] = mid_out  # type: ignore[assignment]
+
+        candidate_indices = []
+        candidate_values = []
+        hookpoints = []
+        layer_mids = []
+        output = 0.0
+        to_delete = set()
+        out, hookpoint = None, None  # type: ignore[misc]
+
+        for i, (hookpoint, layer_mid) in enumerate(self.outputs.items()):
+            if detach_grad:
+                layer_mid.detach()
+
+            divide_by = max(1, len(self.outputs) - 1) if layer_mid.sparse_coder.cfg.divide_cross_layer else 1
+
+            layer_mids.append(layer_mid)
+            hookpoints.append(hookpoint)
+            candidate_indices.append(layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents)
+            candidate_values.append(layer_mid.current_latent_acts)
+
+            if detach_grad and advance:
+                self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
+            if layer_mid.will_be_last:
+                to_delete.add(hookpoint)
+
+            if not mid_out.sparse_coder.cfg.do_coalesce_topk:
+                out = layer_mid(
+                    y,
+                    addition=(0 if hookpoint != module_name else (output / divide_by)),
+                    no_extras=hookpoint != module_name,
+                    denormalize=hookpoint == module_name,
+                    **kwargs,
+                )
+                if hookpoint != module_name:
+                    output += out.sae_out  # type: ignore[operator]
+            else:
+                layer_mid.next()
+
+        if mid_out.sparse_coder.cfg.do_coalesce_topk:
+            candidate_indices = torch.cat(candidate_indices, dim=1)
+            candidate_values = torch.cat(candidate_values, dim=1)
+
+            if mid_out.sparse_coder.cfg.topk_coalesced:
+                if isinstance(candidate_values, DTensor):
+
+                    def mapper(values, indices):
+                        best_vals, best_idxs = torch.topk(values, k=mid_out.sparse_coder.cfg.k, dim=1)
+                        best_idxs = torch.gather(indices, 1, best_idxs)
+                        return best_vals, best_idxs
+
+                    best_values, best_indices = local_map(
+                        mapper,
+                        out_placements=(candidate_values.placements, candidate_indices.placements),
+                    )(candidate_values, candidate_indices)
+                else:
+                    best_values, best_indices = torch.topk(candidate_values, k=mid_out.sparse_coder.cfg.k, dim=1)
+                    best_indices = torch.gather(candidate_indices, 1, best_indices)
+            else:
+                best_values = candidate_values
+                best_indices = candidate_indices
+
+            if mid_out.sparse_coder.cfg.coalesce_topk == "concat":
+                best_indices = best_indices % mid_out.sparse_coder.num_latents
+                new_mid_out = mid_out.copy(indices=best_indices, activations=best_values)
+                out = new_mid_out(y, index=0, add_post_enc=False, **kwargs)
+                if advance:
+                    del mid_out.x  # type: ignore[attr-defined]
+            elif mid_out.sparse_coder.cfg.coalesce_topk == "per-layer":
+                output = 0.0
+                for i, layer_mid in enumerate(layer_mids):
+                    hookpoint = hookpoints[i]
+                    is_ours = hookpoint == module_name
+                    if not is_ours:
+                        continue
+                    num_latents = layer_mid.sparse_coder.num_latents
+                    if is_ours:
+                        best_indices_local = best_indices
+                        best_values_local = best_values
+                    else:
+                        best_indices_local = None
+                        best_values_local = None
+                    new_mid_out = layer_mid.copy(indices=best_indices_local, activations=best_values_local)
+                    out = new_mid_out(
+                        y,
+                        layer_mid.index - 1,
+                        add_post_enc=False,
+                        addition=(0 if hookpoint != module_name else output),
+                        no_extras=hookpoint != module_name,
+                        denormalize=hookpoint == module_name,
+                        **kwargs,
+                    )
+                    if hookpoint != module_name:
+                        output += out.sae_out  # type: ignore[operator]
+                    else:
+                        if isinstance(out.latent_indices, DTensor):
+                            out = replace(
+                                out,
+                                latent_indices=local_map(
+                                    lambda x: (x % num_latents) * (x // num_latents == i),
+                                    out_placements=(out.latent_indices.placements,),
+                                )(out.latent_indices),
+                            )
+                        else:
+                            out = replace(
+                                out,
+                                latent_indices=(out.latent_indices % num_latents) * (out.latent_indices // num_latents == i),
+                            )
+            else:
+                raise ValueError("Unknown coalesce_topk mode: " + mid_out.sparse_coder.cfg.coalesce_topk)
+
+        # Last output is guaranteed to be the current layer
+        assert hookpoint == module_name  # noqa: B013, F821
+
+        if not advance:
+            for layer_mid in layer_mids:
+                layer_mid.prev()
+
+        if advance:
+            for hookpoint in to_delete:
+                del self.outputs[hookpoint]
+
+        return out  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # Public encode/decode interface -----------------------------------
+    # ------------------------------------------------------------------
+    def encode(self, x: Tensor, sparse_coder: SparseCoder, **kwargs):
+        return sparse_coder(x=x, y=None, return_mid_decoder=True, **kwargs)
+
     def decode(
         self,
         mid_out: MidDecoder,
         y: Tensor,
         module_name: str,
+        *,
         detach_grad: bool = False,
         advance: bool = True,
         **kwargs,
     ):
-        """Decode using multiple slices and combine losses."""
-        self.outputs[module_name] = mid_out
-        
-        # Get Matryoshka sizes
-        if mid_out.sparse_coder.cfg.matryoshka_k_values:
-            matryoshka_sizes = mid_out.sparse_coder.cfg.matryoshka_k_values
-            print(f"Matryoshka: Using k_values: {matryoshka_sizes}")
-        elif mid_out.sparse_coder.cfg.matryoshka_expansion_factors:
-            # Extrapolate k values from expansion factors
-            d_in = mid_out.sparse_coder.d_in
-            matryoshka_sizes = [d_in * ef for ef in mid_out.sparse_coder.cfg.matryoshka_expansion_factors]
-            print(f"Matryoshka: Using expansion_factors {mid_out.sparse_coder.cfg.matryoshka_expansion_factors} -> sizes: {matryoshka_sizes} (d_in={d_in})")
-        else:
-            # Default to single size
-            matryoshka_sizes = [mid_out.sparse_coder.cfg.k]
-            print(f"Matryoshka: Using default k: {matryoshka_sizes}")
-        
-        # Calculate cumulative k values for slicing
-        cumulative_k = [0]
-        for k in matryoshka_sizes:
-            cumulative_k.append(cumulative_k[-1] + k)
-        
-        print(f"Matryoshka: Cumulative k values: {cumulative_k}")
-        
-        # Perform decoding for each slice
+        """Apply Matryoshka slicing *and* cross‑layer coalescing.
+
+        For every kᵢ in the Matryoshka ladder we:
+        1. Slice ``mid_out`` to that latent window.
+        2. Run the full CrossLayer coalescing pipeline on the slice.
+        3. Aggregate losses across slices.
+
+        The *largest* slice's ``ForwardOutput`` fields are kept, but its loss
+        metrics are replaced with the *mean* across all slices, matching the
+        description in the paper.
+        """
+        # --------------------------------------------------------------
+        # Determine k‑ladder boundaries
+        # --------------------------------------------------------------
+        k_values = self._matryoshka_sizes(mid_out)
+        cumulative = [0]
+        for k in k_values:
+            cumulative.append(cumulative[-1] + k)
+
         slice_outputs = []
-        total_fvu = 0.0
-        total_auxk_loss = 0.0
-        total_multi_topk_fvu = 0.0
-        
-        for i in range(len(matryoshka_sizes)):
-            k_start = cumulative_k[i]
-            k_end = cumulative_k[i + 1]
-            
-            print(f"Matryoshka: Processing slice {i}: k_start={k_start}, k_end={k_end}")
-            
-            slice_out = self.decode_slice(
-                mid_out,
+        total_fvu = mid_out.latent_acts.new_tensor(0.0)
+        total_aux = mid_out.latent_acts.new_tensor(0.0)
+        total_multi = mid_out.latent_acts.new_tensor(0.0)
+
+        # --------------------------------------------------------------
+        # Run every slice
+        # --------------------------------------------------------------
+        for i in range(len(k_values)):
+            k_start, k_end = cumulative[i], cumulative[i + 1]
+
+            activations = mid_out.latent_acts[:, k_start:k_end]
+            indices = mid_out.latent_indices[:, k_start:k_end]
+            sliced_mid = mid_out.copy(activations=activations, indices=indices)
+
+            out_slice = self._decode_slice(
+                sliced_mid,
                 y,
                 module_name,
-                k_start,
-                k_end,
-                detach_grad,
+                detach_grad=detach_grad,
+                advance=(advance and i == len(k_values) - 1),  # free only on last
                 **kwargs,
             )
-            
-            slice_outputs.append(slice_out)
-            total_fvu += slice_out.fvu
-            total_auxk_loss += slice_out.auxk_loss
-            total_multi_topk_fvu += slice_out.multi_topk_fvu
+
+            slice_outputs.append(out_slice)
+            total_fvu += out_slice.fvu
+            total_aux += out_slice.auxk_loss
+            total_multi += out_slice.multi_topk_fvu
+
+        # --------------------------------------------------------------
+        # Aggregate losses & craft final output (largest slice's output)
+        # --------------------------------------------------------------
+        n = len(k_values)
+        avg_fvu = total_fvu / n
+        avg_aux = total_aux / n
+        avg_multi = total_multi / n
+
+        # --------------------------------------------------------------
+        # Concatenate all slices back together for full activations/indices
+        # --------------------------------------------------------------
+        all_activations = torch.cat([out.latent_acts for out in slice_outputs], dim=1)
+        all_indices = torch.cat([out.latent_indices for out in slice_outputs], dim=1)
         
-        # Average the losses across all slices
-        num_slices = len(matryoshka_sizes)
-        avg_fvu = total_fvu / num_slices
-        avg_auxk_loss = total_auxk_loss / num_slices
-        avg_multi_topk_fvu = total_multi_topk_fvu / num_slices
-        
-        print(f"Matryoshka: Final losses - avg_fvu={avg_fvu:.6f}, avg_auxk={avg_auxk_loss:.6f}, avg_multi_topk={avg_multi_topk_fvu:.6f}")
-        
-        # Use the output from the largest slice as the main output
+        # Use the largest slice's output as the base, but replace activations/indices
         main_output = slice_outputs[-1]
-        
-        # Create combined ForwardOutput
-        combined_output = replace(
-            main_output,
-            fvu=avg_fvu,
-            auxk_loss=avg_auxk_loss,
-            multi_topk_fvu=avg_multi_topk_fvu,
+        combined = replace(
+            main_output, 
+            latent_acts=all_activations,
+            latent_indices=all_indices,
+            fvu=avg_fvu, 
+            auxk_loss=avg_aux, 
+            multi_topk_fvu=avg_multi
         )
-        
-        if advance:
-            for hookpoint in list(self.outputs.keys()):
-                if hookpoint == module_name:
-                    del self.outputs[hookpoint]
-        
-        return combined_output
-    
+        return combined
+
+    # ------------------------------------------------------------------
+    # Convenience wrappers --------------------------------------------
+    # ------------------------------------------------------------------
     def __call__(
         self,
         x: Tensor,
@@ -193,20 +310,30 @@ class MatryoshkaRunner:
         dead_mask: Tensor | None = None,
         loss_mask: Tensor | None = None,
         *,
-        encoder_kwargs: dict = {},
-        decoder_kwargs: dict = {},
+        encoder_kwargs: dict | None = None,
+        decoder_kwargs: dict | None = None,
     ):
+        encoder_kwargs = encoder_kwargs or {}
+        decoder_kwargs = decoder_kwargs or {}
         mid_out = self.encode(x, sparse_coder, dead_mask=dead_mask, **encoder_kwargs)
         return self.decode(
-            mid_out, y, module_name, detach_grad, loss_mask=loss_mask, **decoder_kwargs
+            mid_out,
+            y,
+            module_name,
+            detach_grad=detach_grad,
+            loss_mask=loss_mask,
+            **decoder_kwargs,
         )
-    
+
+    # ------------------------------------------------------------------
+    # House‑keeping ----------------------------------------------------
+    # ------------------------------------------------------------------
     def restore(self):
         for restorable, was_last in self.to_restore.values():
             if was_last:
                 restorable.restore(True)
         self.to_restore.clear()
-    
+
     def reset(self):
         self.outputs.clear()
         self.to_restore.clear()
