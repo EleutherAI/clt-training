@@ -89,7 +89,8 @@ class MatryoshkaRunner:  # noqa: D101
 
             layer_mids.append(layer_mid)
             hookpoints.append(hookpoint)
-            candidate_indices.append(layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents)
+            offset_indices = layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents
+            candidate_indices.append(offset_indices)
             candidate_values.append(layer_mid.current_latent_acts)
 
             if detach_grad and advance:
@@ -567,16 +568,15 @@ class CrossLayerRunner(object):
             
             layer_mids.append(layer_mid)
             hookpoints.append(hookpoint)
-            candidate_indices.append(
-                layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents
-            )
+            offset_indices = layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents
+            candidate_indices.append(offset_indices)
             candidate_values.append(layer_mid.current_latent_acts)
             
             print(f"  Layer {hookpoint} info:")
             print(f"    Original indices shape: {layer_mid.latent_indices.shape}")
             print(f"    Original indices range: {layer_mid.latent_indices.min().item():.0f} to {layer_mid.latent_indices.max().item():.0f}")
-            print(f"    Offset indices shape: {layer_indices.shape}")
-            print(f"    Offset indices range: {layer_indices.min().item():.0f} to {layer_indices.max().item():.0f}")
+            print(f"    Offset indices shape: {offset_indices.shape}")
+            print(f"    Offset indices range: {offset_indices.min().item():.0f} to {offset_indices.max().item():.0f}")
             print(f"    Activations shape: {layer_mid.current_latent_acts.shape}")
             print(f"    Activations non-zero: {(layer_mid.current_latent_acts != 0).sum().item():.0f}")
             
