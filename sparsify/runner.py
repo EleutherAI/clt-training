@@ -254,7 +254,8 @@ class MatryoshkaRunner:  # noqa: D101
         if len(pre_acts.shape) == 1:
             print("Warning: pre_acts is 1D, reshaping to 2D")
             # Reshape to [1, num_latents] if it's 1D
-            pre_acts = pre_acts.unsqueeze(0)  # Add batch dimension
+            # Ensure we maintain the correct dtype (float) when reshaping
+            pre_acts = pre_acts.to(dtype=mid_out.latent_acts.dtype).unsqueeze(0)  # Add batch dimension
             print(f"Reshaped pre-activations shape: {pre_acts.shape}")
         
         # Verify pre_acts has the correct shape
@@ -268,7 +269,8 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"Warning: pre_acts batch size {pre_acts.shape[0]} doesn't match expected {expected_batch_size}")
             if pre_acts.shape[0] == 1:
                 # Broadcast single batch to expected batch size
-                pre_acts = pre_acts.expand(expected_batch_size, -1)
+                # Ensure we maintain the correct dtype (float) when expanding
+                pre_acts = pre_acts.to(dtype=mid_out.latent_acts.dtype).expand(expected_batch_size, -1)
                 print(f"Broadcasted pre_acts to shape: {pre_acts.shape}")
             else:
                 print("Falling back to masking approach")
