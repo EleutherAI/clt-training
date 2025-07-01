@@ -244,11 +244,11 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Pre-activations shape: {pre_acts.shape}")
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
 
-        # Check if we're using batchtopk (which zeroes out most pre-activations)
+        # Note: batchtopk zeroes out most pre-activations, but we can still do per-slice top-k
+        # on the remaining non-zero pre-activations for each slice
         if mid_out.sparse_coder.cfg.activation == "batchtopk":
-            print("Warning: Using batchtopk activation, falling back to masking approach")
-            print("  (batchtopk modifies pre-activations in a way that makes per-slice top-k ineffective)")
-            return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
+            print("Note: Using batchtopk activation with per-slice top-k")
+            print("  (per-slice top-k will work on the non-zero pre-activations for each slice)")
 
         # Handle case where pre_acts is 1D (should be 2D with shape [batch_size, num_latents])
         if len(pre_acts.shape) == 1:
