@@ -260,12 +260,25 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Pre-activations shape: {pre_acts.shape}")
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
 
+        # --------------------------------------------------
+        # Single-pass Matryoshka processing with shape consistency
+        # --------------------------------------------------
+        print(f"\n--- Processing all {len(k_values)} slices in single pass ---")
+        
+        # Create a single MidDecoder that we'll modify for each slice
+        # This ensures we maintain the original shapes throughout
+        working_mid = mid_out.copy()
+        
+        # Ensure proper gradient tracking setup
+        if detach_grad and not hasattr(working_mid, "original_activations"):
+            working_mid.original_activations = mid_out.original_activations
+        
+        # Store the working_mid in outputs for gradient restoration
+        self.outputs[module_name] = working_mid
+        
         for i, k_i in enumerate(k_values):
             print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
             
-            # --------------------------------------------------
-            # Apply batchtopk + top-k to this slice
-            # --------------------------------------------------
             # Create a mask for the subset of latent space for this slice
             subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < k_i
             
@@ -287,7 +300,6 @@ class MatryoshkaRunner:  # noqa: D101
                 print(f"  Applied batchtopk to subset")
             
             # Apply top-k to the subset
-            # Use the same k as the original encoder to maintain shape consistency
             values, indices = torch.topk(subset_pre_acts, k, dim=1, sorted=False)
             
             print(f"  Slice encoding results:")
@@ -296,41 +308,23 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"    Top indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
-            # Create a new MidDecoder with the slice-specific activations and indices
-            # IMPORTANT: Keep the original indices shape [512, 128] to avoid dimension mismatches
-            sliced_mid = mid_out.copy()
-            
-            # Create a mask to zero out activations outside the slice
-            # This maintains the original shape while applying the slice logic
+            # Update the working MidDecoder with slice-specific values
+            # Maintain original shape by creating a mask
             original_shape = mid_out.latent_acts.shape
             slice_mask = torch.zeros(original_shape, device=values.device, dtype=values.dtype)
             
             # Fill in the slice-specific values in the first k positions
             slice_mask[:, :values.shape[1]] = values.detach()
             
-            sliced_mid.latent_acts = slice_mask
-            sliced_mid.latent_acts.requires_grad = True
+            working_mid.latent_acts = slice_mask
+            working_mid.latent_acts.requires_grad = True
             
-            # Keep the original indices shape to avoid dimension mismatches in current_latent_acts
-            # The indices are used for post_enc indexing, so they need to match the original shape
-            sliced_mid.latent_indices = mid_out.latent_indices
+            # Keep original indices shape to avoid dimension mismatches
+            working_mid.latent_indices = mid_out.latent_indices
             
-            # Ensure the copied MidDecoder has proper gradient tracking setup
-            if detach_grad and not hasattr(sliced_mid, "original_activations"):
-                # Store the original activations to maintain shape consistency
-                sliced_mid.original_activations = mid_out.original_activations
-            
-            # --------------------------------------------------
             # Decode this slice with full coalescing logic
-            # --------------------------------------------------
-            # For the last slice, we need to ensure it gets stored in self.outputs
-            # for proper gradient restoration
-            if i == len(k_values) - 1:
-                # Store the sliced_mid in outputs for the last slice
-                self.outputs[module_name] = sliced_mid
-                
             out_slice = self._decode_slice(
-                sliced_mid,
+                working_mid,
                 y,
                 module_name,
                 detach_grad=detach_grad,
