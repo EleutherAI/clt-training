@@ -239,112 +239,63 @@ class MatryoshkaRunner:  # noqa: D101
             mid_out.latent_acts = mid_out.latent_acts.detach()
             mid_out.latent_acts.requires_grad = True
 
-        # Get the pre-activations from the original encoding
-        # We need to re-encode to get access to the full pre-activations
-        if mid_out.pre_acts is None:
-            print("Warning: pre_acts is None, falling back to masking approach")
-            # Fallback to the original masking approach if pre_acts is not available
-            return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
+        # For each slice, we'll apply the full encoder pipeline (batchtopk + top-k) to that slice
+        # This mimics what CrossLayerRunner does but applied to each slice separately
         
-        pre_acts = mid_out.pre_acts
-        print(f"Pre-activations shape: {pre_acts.shape}")
-        print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
-
-        # Note: batchtopk zeroes out most pre-activations, but we can still do per-slice top-k
-        # on the remaining non-zero pre-activations for each slice
-        if mid_out.sparse_coder.cfg.activation == "batchtopk":
-            print("Note: Using batchtopk activation with per-slice top-k")
-            print("  (per-slice top-k will work on the non-zero pre-activations for each slice)")
-
-        # Handle case where pre_acts is 1D (should be 2D with shape [batch_size, num_latents])
-        if len(pre_acts.shape) == 1:
-            print("Warning: pre_acts is 1D, reshaping to 2D")
-            # Reshape to [1, num_latents] if it's 1D
-            # Ensure we maintain the correct dtype (float) when reshaping
-            pre_acts = pre_acts.to(dtype=mid_out.latent_acts.dtype).unsqueeze(0)  # Add batch dimension
-            print(f"Reshaped pre-activations shape: {pre_acts.shape}")
+        # Get the original input and encoder weights to re-encode each slice
+        x = mid_out.x
+        encoder_weight = mid_out.sparse_coder.encoder.weight
+        encoder_bias = mid_out.sparse_coder.encoder.bias
+        k = mid_out.sparse_coder.cfg.k
+        activation = mid_out.sparse_coder.cfg.activation
         
-        # Verify pre_acts has the correct shape
-        if len(pre_acts.shape) != 2:
-            print(f"Warning: pre_acts has unexpected shape {pre_acts.shape}, falling back to masking approach")
-            return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
-        
-        # Check if batch size matches
-        expected_batch_size = mid_out.latent_acts.shape[0]
-        if pre_acts.shape[0] != expected_batch_size:
-            print(f"Warning: pre_acts batch size {pre_acts.shape[0]} doesn't match expected {expected_batch_size}")
-            if pre_acts.shape[0] == 1:
-                # Broadcast single batch to expected batch size
-                # Ensure we maintain the correct dtype (float) when expanding
-                pre_acts = pre_acts.to(dtype=mid_out.latent_acts.dtype).expand(expected_batch_size, -1)
-                print(f"Broadcasted pre_acts to shape: {pre_acts.shape}")
-            else:
-                print("Falling back to masking approach")
-                return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
-
-        # Check if pre-activations are meaningful (not all zero or very small)
-        # This is important at the beginning of training when weights are random
-        pre_acts_magnitude = pre_acts.abs().mean().item()
-        print(f"Pre-activations mean magnitude: {pre_acts_magnitude:.6f}")
-        
-        # Even if pre-activations are small, we can still do per-slice top-k
-        # The selection will be based on relative magnitudes, which is still meaningful
-        if pre_acts_magnitude < 1e-6:
-            print("Note: Pre-activations are very small (likely early training)")
-            print("  (per-slice top-k will still work based on relative magnitudes)")
+        print(f"Original input shape: {x.shape}")
+        print(f"Encoder weight shape: {encoder_weight.shape}")
+        print(f"Using activation: {activation}")
+        print(f"Using k: {k}")
 
         for i, k_i in enumerate(k_values):
             print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
             
             # --------------------------------------------------
-            # Apply top-k to the subset of latent space for this slice
+            # Apply the full encoder pipeline to this slice
             # --------------------------------------------------
             # Create a mask for the subset of latent space for this slice
-            subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < k_i
+            subset_mask = torch.arange(encoder_weight.shape[0], device=encoder_weight.device) < k_i
             
-            # Apply the mask to get the subset of pre-activations
-            # Convert mask to float to avoid boolean tensor issues
-            subset_pre_acts = pre_acts * subset_mask.float()
+            # Apply the mask to the encoder weights to get slice-specific encoding
+            # This effectively creates a smaller encoder for this slice
+            subset_encoder_weight = encoder_weight * subset_mask.float().unsqueeze(1)
+            subset_encoder_bias = encoder_bias * subset_mask.float()
             
             print(f"  Subset mask shape: {subset_mask.shape}")
             print(f"  Subset mask sum (active features): {subset_mask.sum().item():.0f}")
             print(f"  Subset mask percentage: {subset_mask.float().mean().item()*100:.1f}%")
-            print(f"  Subset pre-activations shape: {subset_pre_acts.shape}")
-            print(f"  Subset pre-activations non-zero: {(subset_pre_acts != 0).sum().item():.0f}")
-            print(f"  Subset pre-activations dtype: {subset_pre_acts.dtype}")
+            print(f"  Subset encoder weight shape: {subset_encoder_weight.shape}")
+            print(f"  Subset encoder weight non-zero: {(subset_encoder_weight != 0).sum().item():.0f}")
 
-            # Apply top-k to the subset
-            # Use the same k as the original encoding (cfg.k) but only within the subset
-            subset_k = min(mid_out.sparse_coder.cfg.k, k_i)
+            # Apply the full encoder pipeline to this slice
+            # This includes batchtopk + top-k selection, just like the original encoder
+            from .fused_encoder import fused_encoder
             
-            if isinstance(subset_pre_acts, torch.distributed.tensor.DTensor):
-                # Handle distributed tensor case
-                local_pre_acts = subset_pre_acts.to_local()
-                local_values, local_indices = local_pre_acts.topk(subset_k, dim=1, sorted=False)
-                # Indices are already correct since we sliced the tensor
-                values = torch.distributed.tensor.DTensor.from_local(
-                    local_values,
-                    subset_pre_acts.device_mesh,
-                    (torch.distributed.tensor.Shard(0), torch.distributed.tensor.Replicate()),
-                )
-                indices = torch.distributed.tensor.DTensor.from_local(
-                    local_indices,
-                    subset_pre_acts.device_mesh,
-                    (torch.distributed.tensor.Shard(0), torch.distributed.tensor.Replicate()),
-                )
-            else:
-                # Handle regular tensor case
-                values, indices = torch.topk(subset_pre_acts, subset_k, dim=1, sorted=False)
-                # Indices are already correct since we sliced the tensor
-
-            print(f"  Top-k applied with k={subset_k}")
-            print(f"  Selected values shape: {values.shape}")
-            print(f"  Selected indices shape: {indices.shape}")
-            print(f"  Selected indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
-            print(f"  Selected values non-zero: {(values != 0).sum().item():.0f}")
+            # Encode the input using the slice-specific encoder
+            slice_top_acts, slice_top_indices, slice_pre_acts = fused_encoder(
+                x,
+                subset_encoder_weight,
+                subset_encoder_bias,
+                k,
+                activation,
+                mid_out.sparse_coder.cfg.use_fp8,
+            )
+            
+            print(f"  Slice encoding results:")
+            print(f"    Top activations shape: {slice_top_acts.shape}")
+            print(f"    Top indices shape: {slice_top_indices.shape}")
+            print(f"    Top indices range: {slice_top_indices.min().item():.0f} to {slice_top_indices.max().item():.0f}")
+            print(f"    Top activations non-zero: {(slice_top_acts != 0).sum().item():.0f}")
 
             # Create a new MidDecoder with the slice-specific activations and indices
-            sliced_mid = mid_out.copy(activations=values, indices=indices)
+            sliced_mid = mid_out.copy(activations=slice_top_acts, indices=slice_top_indices)
             
             # Ensure the copied MidDecoder has proper gradient tracking setup
             if detach_grad and not hasattr(sliced_mid, "original_activations"):
