@@ -297,7 +297,7 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
             # Create a new MidDecoder with the slice-specific activations and indices
-            # IMPORTANT: Maintain the original activation shape [512, 128] to avoid gradient shape mismatches
+            # IMPORTANT: Keep the original indices shape [512, 128] to avoid dimension mismatches
             sliced_mid = mid_out.copy()
             
             # Create a mask to zero out activations outside the slice
@@ -310,7 +310,10 @@ class MatryoshkaRunner:  # noqa: D101
             
             sliced_mid.latent_acts = slice_mask
             sliced_mid.latent_acts.requires_grad = True
-            sliced_mid.latent_indices = indices
+            
+            # Keep the original indices shape to avoid dimension mismatches in current_latent_acts
+            # The indices are used for post_enc indexing, so they need to match the original shape
+            sliced_mid.latent_indices = mid_out.latent_indices
             
             # Ensure the copied MidDecoder has proper gradient tracking setup
             if detach_grad and not hasattr(sliced_mid, "original_activations"):
