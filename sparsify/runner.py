@@ -261,22 +261,13 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
 
         # --------------------------------------------------
-        # Optimized Matryoshka processing: compute largest slice first, then smaller slices
+        # Ultra-optimized Matryoshka processing: cross-layer coalescing only for largest slice
         # --------------------------------------------------
-        print(f"\n--- Optimized processing: largest slice first, then smaller slices ---")
+        print(f"\n--- Ultra-optimized processing: cross-layer coalescing only for largest slice ---")
         
-        # Create a single MidDecoder that we'll modify for each slice
-        working_mid = mid_out.copy()
+        # Process slices in reverse order (largest to smallest)
+        largest_slice_output = None
         
-        # Ensure proper gradient tracking setup
-        if detach_grad and not hasattr(working_mid, "original_activations"):
-            working_mid.original_activations = mid_out.original_activations
-        
-        # Store the working_mid in outputs for gradient restoration
-        self.outputs[module_name] = working_mid
-        
-        # Process slices in reverse order (largest to smallest) for efficiency
-        # The largest slice is identical to what CrossLayerRunner would do
         for i, k_i in enumerate(reversed(k_values)):
             slice_idx = len(k_values) - 1 - i  # Convert back to original index
             print(f"\n--- Slice {slice_idx + 1}/{len(k_values)}: k={k_i} ---")
@@ -310,8 +301,7 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"    Top indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
-            # Create a fresh MidDecoder for each slice to avoid cross-layer coalescing issues
-            # This ensures we don't have shape mismatches in the coalescing logic
+            # Create a MidDecoder for this slice
             slice_mid = mid_out.copy()
             
             # Update the slice MidDecoder with slice-specific values
@@ -332,32 +322,60 @@ class MatryoshkaRunner:  # noqa: D101
             if detach_grad and not hasattr(slice_mid, "original_activations"):
                 slice_mid.original_activations = mid_out.original_activations
             
-            # For the largest slice (i=0), store it in outputs for gradient restoration
+            # Only do full cross-layer coalescing and decoding for the largest slice (i=0)
             if i == 0:
+                # This is the largest slice - do full cross-layer processing
+                print(f"  Processing largest slice with full cross-layer coalescing")
+                
+                # Store it in outputs for gradient restoration
                 self.outputs[module_name] = slice_mid
-            
-            # Decode this slice with full coalescing logic
-            # For the largest slice (i=0), this is identical to CrossLayerRunner
-            out_slice = self._decode_slice(
-                slice_mid,
-                y,
-                module_name,
-                detach_grad=detach_grad,
-                advance=(advance and i == 0),  # Only advance for the largest slice
-                **kwargs,
-            )
-
-            print(f"  Slice {slice_idx + 1} results:")
-            print(f"    FVU: {out_slice.fvu.item():.6f}")
-            print(f"    AuxK: {out_slice.auxk_loss.item():.6f}")
-            print(f"    Multi-TopK: {out_slice.multi_topk_fvu.item():.6f}")
-            print(f"    Output shape: {out_slice.sae_out.shape}")
-
-            # Store in correct order (smallest to largest)
-            slice_outputs.insert(0, out_slice)
-            total_fvu += out_slice.fvu
-            total_aux += out_slice.auxk_loss
-            total_multi += out_slice.multi_topk_fvu
+                
+                # Do full cross-layer coalescing and decoding
+                largest_slice_output = self._decode_slice(
+                    slice_mid,
+                    y,
+                    module_name,
+                    detach_grad=detach_grad,
+                    advance=advance,  # Advance for the largest slice
+                    **kwargs,
+                )
+                
+                print(f"  Largest slice results:")
+                print(f"    FVU: {largest_slice_output.fvu.item():.6f}")
+                print(f"    AuxK: {largest_slice_output.auxk_loss.item():.6f}")
+                print(f"    Multi-TopK: {largest_slice_output.multi_topk_fvu.item():.6f}")
+                print(f"    Output shape: {largest_slice_output.sae_out.shape}")
+                
+                # Store the largest slice output
+                slice_outputs.insert(0, largest_slice_output)
+                total_fvu += largest_slice_output.fvu
+                total_aux += largest_slice_output.auxk_loss
+                total_multi += largest_slice_output.multi_topk_fvu
+                
+            else:
+                # This is a smaller slice - only compute losses without cross-layer coalescing
+                print(f"  Processing smaller slice with direct loss computation")
+                
+                # Compute losses directly without cross-layer coalescing
+                # This is much faster as it avoids the expensive cross-layer operations
+                out_slice = slice_mid(
+                    y,
+                    index=0,
+                    add_post_enc=False,
+                    **kwargs,
+                )
+                
+                print(f"  Smaller slice results:")
+                print(f"    FVU: {out_slice.fvu.item():.6f}")
+                print(f"    AuxK: {out_slice.auxk_loss.item():.6f}")
+                print(f"    Multi-TopK: {out_slice.multi_topk_fvu.item():.6f}")
+                print(f"    Output shape: {out_slice.sae_out.shape}")
+                
+                # Store the smaller slice output
+                slice_outputs.insert(0, out_slice)
+                total_fvu += out_slice.fvu
+                total_aux += out_slice.auxk_loss
+                total_multi += out_slice.multi_topk_fvu
 
         n_slices = len(k_values)
         avg_fvu = total_fvu / n_slices
