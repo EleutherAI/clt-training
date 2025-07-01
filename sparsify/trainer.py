@@ -928,9 +928,11 @@ class Trainer:
             self.global_step += 1
             pbar.update()
 
-            self.save()
-            if self.cfg.save_best:
-                self.save_best(avg_losses)
+            # Only save every save_every steps, not after every iteration
+            if self.global_step % self.cfg.save_every == 0:
+                self.save()
+                if self.cfg.save_best:
+                    self.save_best(avg_losses)
 
         pbar.close()
 

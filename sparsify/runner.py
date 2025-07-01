@@ -295,6 +295,10 @@ class MatryoshkaRunner:  # noqa: D101
         #    - Use torch.compile() for the slice processing loop
         #    - Optimize tensor operations to avoid unnecessary copies
         #
+        # TIMING ANALYSIS: MatryoshkaRunner is actually quite fast (~0.05-0.09s per layer)
+        # The bottleneck is likely in the overall training loop, not the MatryoshkaRunner itself.
+        # EASIEST OPTIMIZATION: Reduce from 3 slices to 2 slices (33% speedup per layer)
+        #
         print(f"\n--- Ultra-optimized processing: cross-layer coalescing only for largest slice ---")
         
         # Process slices in reverse order (largest to smallest)
