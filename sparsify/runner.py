@@ -244,6 +244,12 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Pre-activations shape: {pre_acts.shape}")
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
 
+        # Check if we're using batchtopk (which zeroes out most pre-activations)
+        if mid_out.sparse_coder.cfg.activation == "batchtopk":
+            print("Warning: Using batchtopk activation, falling back to masking approach")
+            print("  (batchtopk modifies pre-activations in a way that makes per-slice top-k ineffective)")
+            return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
+
         # Handle case where pre_acts is 1D (should be 2D with shape [batch_size, num_latents])
         if len(pre_acts.shape) == 1:
             print("Warning: pre_acts is 1D, reshaping to 2D")
@@ -268,6 +274,17 @@ class MatryoshkaRunner:  # noqa: D101
                 print("Falling back to masking approach")
                 return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
 
+        # Check if pre-activations are meaningful (not all zero or very small)
+        # This is important at the beginning of training when weights are random
+        pre_acts_magnitude = pre_acts.abs().mean().item()
+        print(f"Pre-activations mean magnitude: {pre_acts_magnitude:.6f}")
+        
+        # Even if pre-activations are small, we can still do per-slice top-k
+        # The selection will be based on relative magnitudes, which is still meaningful
+        if pre_acts_magnitude < 1e-6:
+            print("Note: Pre-activations are very small (likely early training)")
+            print("  (per-slice top-k will still work based on relative magnitudes)")
+
         for i, k_i in enumerate(k_values):
             print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
             
@@ -278,13 +295,15 @@ class MatryoshkaRunner:  # noqa: D101
             subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < k_i
             
             # Apply the mask to get the subset of pre-activations
-            subset_pre_acts = pre_acts * subset_mask.to(pre_acts.dtype)
+            # Convert mask to float to avoid boolean tensor issues
+            subset_pre_acts = pre_acts * subset_mask.float()
             
             print(f"  Subset mask shape: {subset_mask.shape}")
             print(f"  Subset mask sum (active features): {subset_mask.sum().item():.0f}")
             print(f"  Subset mask percentage: {subset_mask.float().mean().item()*100:.1f}%")
             print(f"  Subset pre-activations shape: {subset_pre_acts.shape}")
             print(f"  Subset pre-activations non-zero: {(subset_pre_acts != 0).sum().item():.0f}")
+            print(f"  Subset pre-activations dtype: {subset_pre_acts.dtype}")
 
             # Apply top-k to the subset
             # Use the same k as the original encoding (cfg.k) but only within the subset
@@ -294,8 +313,7 @@ class MatryoshkaRunner:  # noqa: D101
                 # Handle distributed tensor case
                 local_pre_acts = subset_pre_acts.to_local()
                 local_values, local_indices = local_pre_acts.topk(subset_k, dim=1, sorted=False)
-                # Adjust indices to account for the subset offset
-                local_indices = local_indices + (local_indices < k_i).to(local_indices.dtype) * 0  # No offset needed since we masked
+                # Indices are already correct since we sliced the tensor
                 values = torch.distributed.tensor.DTensor.from_local(
                     local_values,
                     subset_pre_acts.device_mesh,
@@ -309,8 +327,7 @@ class MatryoshkaRunner:  # noqa: D101
             else:
                 # Handle regular tensor case
                 values, indices = torch.topk(subset_pre_acts, subset_k, dim=1, sorted=False)
-                # Adjust indices to account for the subset offset
-                indices = indices + (indices < k_i).to(indices.dtype) * 0  # No offset needed since we masked
+                # Indices are already correct since we sliced the tensor
 
             print(f"  Top-k applied with k={subset_k}")
             print(f"  Selected values shape: {values.shape}")
