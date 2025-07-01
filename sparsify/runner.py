@@ -297,18 +297,25 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
             # Create a new MidDecoder with the slice-specific activations and indices
-            # Create a new MidDecoder for each slice to avoid modifying the original
-            # This ensures gradient restoration works correctly
+            # IMPORTANT: Maintain the original activation shape [512, 128] to avoid gradient shape mismatches
             sliced_mid = mid_out.copy()
-            sliced_mid.latent_acts = values.detach()
+            
+            # Create a mask to zero out activations outside the slice
+            # This maintains the original shape while applying the slice logic
+            original_shape = mid_out.latent_acts.shape
+            slice_mask = torch.zeros(original_shape, device=values.device, dtype=values.dtype)
+            
+            # Fill in the slice-specific values in the first k positions
+            slice_mask[:, :values.shape[1]] = values.detach()
+            
+            sliced_mid.latent_acts = slice_mask
             sliced_mid.latent_acts.requires_grad = True
             sliced_mid.latent_indices = indices
             
             # Ensure the copied MidDecoder has proper gradient tracking setup
             if detach_grad and not hasattr(sliced_mid, "original_activations"):
-                # Store the slice-specific activations as original_activations
-                # This ensures gradient restoration works with the correct shape
-                sliced_mid.original_activations = values.detach()
+                # Store the original activations to maintain shape consistency
+                sliced_mid.original_activations = mid_out.original_activations
             
             # --------------------------------------------------
             # Decode this slice with full coalescing logic
