@@ -297,20 +297,12 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
             # Create a new MidDecoder with the slice-specific activations and indices
-            # IMPORTANT: Keep the original activation shape to avoid gradient shape mismatches
-            # We'll use the original mid_out's activation shape and just update the values
-            if i == 0:
-                # For the first slice, create a copy with the same shape as original
-                sliced_mid = mid_out.copy()
-                # Update the activations and indices for this slice
-                sliced_mid.latent_acts = values.detach()
-                sliced_mid.latent_acts.requires_grad = True
-                sliced_mid.latent_indices = indices
-            else:
-                # For subsequent slices, reuse the same MidDecoder object but update values
-                sliced_mid.latent_acts = values.detach()
-                sliced_mid.latent_acts.requires_grad = True
-                sliced_mid.latent_indices = indices
+            # Create a new MidDecoder for each slice to avoid modifying the original
+            # This ensures gradient restoration works correctly
+            sliced_mid = mid_out.copy()
+            sliced_mid.latent_acts = values.detach()
+            sliced_mid.latent_acts.requires_grad = True
+            sliced_mid.latent_indices = indices
             
             # Ensure the copied MidDecoder has proper gradient tracking setup
             if detach_grad and not hasattr(sliced_mid, "original_activations"):
@@ -319,6 +311,12 @@ class MatryoshkaRunner:  # noqa: D101
             # --------------------------------------------------
             # Decode this slice with full coalescing logic
             # --------------------------------------------------
+            # For the last slice, we need to ensure it gets stored in self.outputs
+            # for proper gradient restoration
+            if i == len(k_values) - 1:
+                # Store the sliced_mid in outputs for the last slice
+                self.outputs[module_name] = sliced_mid
+                
             out_slice = self._decode_slice(
                 sliced_mid,
                 y,
@@ -359,11 +357,12 @@ class MatryoshkaRunner:  # noqa: D101
         # Build combined ``ForwardOutput`` using the largest slice's object as a
         # template, but patch the losses to averaged versions.
         # ------------------------------------------------------------------
-        main_out = slice_outputs[-1]
+        # Use the largest slice (last slice) for the final output
+        largest_slice_output = slice_outputs[-1]
+        
+        # Create final output with largest slice values but averaged losses
         final_output = replace(
-            main_out,
-            latent_acts=slice_outputs[-1].latent_acts,
-            latent_indices=slice_outputs[-1].latent_indices,
+            largest_slice_output,
             fvu=avg_fvu,
             auxk_loss=avg_aux,
             multi_topk_fvu=avg_multi,
