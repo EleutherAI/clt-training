@@ -233,6 +233,12 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Processing {len(k_values)} Matryoshka slices (per-slice top-k approach):")
         print(f"{'='*40}")
 
+        # Ensure the original mid_out has proper gradient tracking setup
+        if detach_grad and not hasattr(mid_out, "original_activations"):
+            mid_out.original_activations = mid_out.latent_acts
+            mid_out.latent_acts = mid_out.latent_acts.detach()
+            mid_out.latent_acts.requires_grad = True
+
         # Get the pre-activations from the original encoding
         # We need to re-encode to get access to the full pre-activations
         if mid_out.pre_acts is None:
