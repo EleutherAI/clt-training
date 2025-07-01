@@ -405,7 +405,6 @@ class MatryoshkaRunner:  # noqa: D101
         mid_out: MidDecoder,
         y: Tensor,
         module_name: str,
-        *,
         detach_grad: bool = False,
         advance: bool = True,
         **kwargs,
