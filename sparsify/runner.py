@@ -306,7 +306,9 @@ class MatryoshkaRunner:  # noqa: D101
             
             # Ensure the copied MidDecoder has proper gradient tracking setup
             if detach_grad and not hasattr(sliced_mid, "original_activations"):
-                sliced_mid.original_activations = mid_out.original_activations
+                # Store the slice-specific activations as original_activations
+                # This ensures gradient restoration works with the correct shape
+                sliced_mid.original_activations = values.detach()
             
             # --------------------------------------------------
             # Decode this slice with full coalescing logic
