@@ -224,24 +224,12 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Original indices shape: {mid_out.latent_indices.shape}")
         print(f"Original indices range: {mid_out.latent_indices.min().item():.0f} to {mid_out.latent_indices.max().item():.0f}")
 
-        total_fvu = mid_out.latent_acts.new_tensor(0.0)
-        total_aux = mid_out.latent_acts.new_tensor(0.0)
-        total_multi = mid_out.latent_acts.new_tensor(0.0)
-        slice_outputs = []
-
-        print(f"\n{'='*40}")
-        print(f"Processing {len(k_values)} Matryoshka slices (per-slice top-k approach):")
-        print(f"{'='*40}")
-
         # Ensure the original mid_out has proper gradient tracking setup
         if detach_grad and not hasattr(mid_out, "original_activations"):
             mid_out.original_activations = mid_out.latent_acts
             mid_out.latent_acts = mid_out.latent_acts.detach()
             mid_out.latent_acts.requires_grad = True
 
-        # Compute pre-activations once and then apply batchtopk + top-k to each slice
-        # This avoids creating multiple computation graphs
-        
         # Get the original input and encoder weights
         x = mid_out.x
         encoder_weight = mid_out.sparse_coder.encoder.weight
@@ -261,12 +249,15 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
 
         # --------------------------------------------------
-        # Ultra-optimized Matryoshka processing: cross-layer coalescing only for largest slice
+        # Ultra-optimized Matryoshka processing: compute losses only once
         # --------------------------------------------------
-        print(f"\n--- Ultra-optimized processing: cross-layer coalescing only for largest slice ---")
+        print(f"\n--- Ultra-optimized processing: single loss computation ---")
         
         # Process slices in reverse order (largest to smallest)
         largest_slice_output = None
+        total_fvu = mid_out.latent_acts.new_tensor(0.0)
+        total_aux = mid_out.latent_acts.new_tensor(0.0)
+        total_multi = mid_out.latent_acts.new_tensor(0.0)
         
         for i, k_i in enumerate(reversed(k_values)):
             slice_idx = len(k_values) - 1 - i  # Convert back to original index
@@ -347,7 +338,6 @@ class MatryoshkaRunner:  # noqa: D101
                 print(f"    Output shape: {largest_slice_output.sae_out.shape}")
                 
                 # Store the largest slice output
-                slice_outputs.insert(0, largest_slice_output)
                 total_fvu += largest_slice_output.fvu
                 total_aux += largest_slice_output.auxk_loss
                 total_multi += largest_slice_output.multi_topk_fvu
@@ -372,7 +362,6 @@ class MatryoshkaRunner:  # noqa: D101
                 print(f"    Output shape: {out_slice.sae_out.shape}")
                 
                 # Store the smaller slice output
-                slice_outputs.insert(0, out_slice)
                 total_fvu += out_slice.fvu
                 total_aux += out_slice.auxk_loss
                 total_multi += out_slice.multi_topk_fvu
@@ -398,7 +387,7 @@ class MatryoshkaRunner:  # noqa: D101
         # template, but patch the losses to averaged versions.
         # ------------------------------------------------------------------
         # Use the largest slice (last slice) for the final output
-        largest_slice_output = slice_outputs[-1]
+       
         
         # Create final output with largest slice values but averaged losses
         final_output = replace(
