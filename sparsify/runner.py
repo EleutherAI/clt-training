@@ -310,7 +310,11 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"    Top indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
-            # Update the working MidDecoder with slice-specific values
+            # Create a fresh MidDecoder for each slice to avoid cross-layer coalescing issues
+            # This ensures we don't have shape mismatches in the coalescing logic
+            slice_mid = mid_out.copy()
+            
+            # Update the slice MidDecoder with slice-specific values
             # Maintain original shape by creating a mask
             original_shape = mid_out.latent_acts.shape
             slice_mask = torch.zeros(original_shape, device=values.device, dtype=values.dtype)
@@ -318,16 +322,24 @@ class MatryoshkaRunner:  # noqa: D101
             # Fill in the slice-specific values in the first k positions
             slice_mask[:, :values.shape[1]] = values.detach()
             
-            working_mid.latent_acts = slice_mask
-            working_mid.latent_acts.requires_grad = True
+            slice_mid.latent_acts = slice_mask
+            slice_mid.latent_acts.requires_grad = True
             
             # Keep original indices shape to avoid dimension mismatches
-            working_mid.latent_indices = mid_out.latent_indices
+            slice_mid.latent_indices = mid_out.latent_indices
+            
+            # Ensure proper gradient tracking setup
+            if detach_grad and not hasattr(slice_mid, "original_activations"):
+                slice_mid.original_activations = mid_out.original_activations
+            
+            # For the largest slice (i=0), store it in outputs for gradient restoration
+            if i == 0:
+                self.outputs[module_name] = slice_mid
             
             # Decode this slice with full coalescing logic
             # For the largest slice (i=0), this is identical to CrossLayerRunner
             out_slice = self._decode_slice(
-                working_mid,
+                slice_mid,
                 y,
                 module_name,
                 detach_grad=detach_grad,
@@ -348,9 +360,9 @@ class MatryoshkaRunner:  # noqa: D101
             total_multi += out_slice.multi_topk_fvu
 
         n_slices = len(k_values)
-        sum_fvu = total_fvu  # Use sum instead of average
-        sum_aux = total_aux  # Use sum instead of average
-        sum_multi = total_multi  # Use sum instead of average
+        avg_fvu = total_fvu / n_slices
+        avg_aux = total_aux / n_slices
+        avg_multi = total_multi / n_slices
 
         print(f"\n{'='*40}")
         print(f"Loss Aggregation Results:")
@@ -359,23 +371,23 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Total FVU: {total_fvu.item():.6f}")
         print(f"Total AuxK: {total_aux.item():.6f}")
         print(f"Total Multi-TopK: {total_multi.item():.6f}")
-        print(f"Sum FVU: {sum_fvu.item():.6f}")
-        print(f"Sum AuxK: {sum_aux.item():.6f}")
-        print(f"Sum Multi-TopK: {sum_multi.item():.6f}")
+        print(f"Average FVU: {avg_fvu.item():.6f}")
+        print(f"Average AuxK: {avg_aux.item():.6f}")
+        print(f"Average Multi-TopK: {avg_multi.item():.6f}")
 
         # ------------------------------------------------------------------
         # Build combined ``ForwardOutput`` using the largest slice's object as a
-        # template, but patch the losses to summed versions.
+        # template, but patch the losses to averaged versions.
         # ------------------------------------------------------------------
         # Use the largest slice (last slice) for the final output
         largest_slice_output = slice_outputs[-1]
         
-        # Create final output with largest slice values but summed losses
+        # Create final output with largest slice values but averaged losses
         final_output = replace(
             largest_slice_output,
-            fvu=sum_fvu,
-            auxk_loss=sum_aux,
-            multi_topk_fvu=sum_multi,
+            fvu=total_fvu,
+            auxk_loss=total_aux,
+            multi_topk_fvu=total_multi,
         )
         
         print(f"\n{'='*40}")
