@@ -16,6 +16,64 @@ from torch.distributed.tensor.device_mesh import DeviceMesh
 from transformers import PreTrainedModel
 
 try:
+    import torchao.optim.quant_utils
+
+    # https://github.com/pytorch/ao/issues/2296
+    def _fp32_to_bf16_sr(x_f32: Tensor) -> Tensor:
+        # For an FP32 number      [a31, ..., a16, a15, ..., a0] to be converted to BF16
+        # - Round towards zero:   [a31, ..., a16,   0, ...,  0]
+        # - Round away from zero: [a31, ..., a16+1, 0, ...,  0]
+        # (since the value can be negative, we use round towards/away from zero instead
+        # of round up/down)
+        #
+        # For stochastic rounding, we round away from zero with the probability of
+        # [a15, ..., a0] / 2^16, where the bit pattern [a15, ..., a0] is interpreted
+        # as uint16
+        #
+        # we have to use int32 since most arithmetic ops are not implemented
+        # for uint32/int16/uint16
+        if isinstance(x_f32, DTensor):
+            rand_16bit = torch.randint(
+                0,
+                1 << 16,
+                x_f32.to_local().shape,
+                device=x_f32.device,
+                dtype=torch.int32,
+            )
+        else:
+            rand_16bit = torch.randint(
+                0, 1 << 16, x_f32.shape, device=x_f32.device, dtype=torch.int32
+            )
+        x_f32_bits = x_f32.view(torch.int32)
+        x_fraction = x_f32_bits & 0xFFFF  # lower 16 bits
+        x_bf16_towards_zero = x_f32_bits & 0xFFFF0000  # upper 16 bits
+
+        if isinstance(x_fraction, DTensor):
+            rand_16bit = DTensor.from_local(
+                rand_16bit,
+                device_mesh=x_fraction.device_mesh,
+                placements=x_fraction.placements,
+            )
+
+        x_f32_bits = torch.where(
+            rand_16bit < x_fraction,  # this is True with the probability of p_fraction
+            x_bf16_towards_zero
+            + 0x10000,  # this might overflow, which will result in UB due to signed int
+            x_bf16_towards_zero,
+        )
+        # alternative, slightly faster
+        # x_f32_bits = (x_f32_bits + rand_16bit) & 0xFFFF0000
+        return x_f32_bits.view(torch.float32).bfloat16()
+
+    torchao.optim.quant_utils._fp32_to_bf16_sr = _fp32_to_bf16_sr
+    import importlib
+
+    importlib.reload(torchao.optim.adam)
+
+except ImportError:
+    print("torchao not installed, using default implementation of stochastic rounding.")
+
+try:
     from torchao.optim.subclass_8bit import OptimState8bit
 except ImportError:
     OptimState8bit = object
@@ -542,52 +600,13 @@ if DISTRIBUTE_MODEL:
     ALL_ATTENTION_FUNCTIONS["sdpa"] = new_sdpa
 
 
-def _fp32_to_bf16_sr(x_f32: Tensor) -> Tensor:
-    # For an FP32 number      [a31, ..., a16, a15, ..., a0] to be converted to BF16
-    # - Round towards zero:   [a31, ..., a16,   0, ...,  0]
-    # - Round away from zero: [a31, ..., a16+1, 0, ...,  0]
-    # (since the value can be negative, we use round towards/away from zero instead
-    # of round up/down)
-    #
-    # For stochastic rounding, we round away from zero with the probability of
-    # [a15, ..., a0] / 2^16, where the bit pattern [a15, ..., a0] is interpreted
-    # as uint16
-    #
-    # we have to use int32 since most arithmetic ops are not implemented
-    # for uint32/int16/uint16
-    if isinstance(x_f32, DTensor):
-        rand_16bit = torch.randint(
-            0, 1 << 16, x_f32.to_local().shape, device=x_f32.device, dtype=torch.int32
-        )
-    else:
-        rand_16bit = torch.randint(
-            0, 1 << 16, x_f32.shape, device=x_f32.device, dtype=torch.int32
-        )
-    x_f32_bits = x_f32.view(torch.int32)
-    x_fraction = x_f32_bits & 0xFFFF  # lower 16 bits
-    x_bf16_towards_zero = x_f32_bits & 0xFFFF0000  # upper 16 bits
+class BackwardPrint(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: Tensor, message: str):
+        ctx.message = message
+        return x
 
-    if isinstance(x_fraction, DTensor):
-        rand_16bit = DTensor.from_local(
-            rand_16bit,
-            device_mesh=x_fraction.device_mesh,
-            placements=x_fraction.placements,
-        )
-
-    x_f32_bits = torch.where(
-        rand_16bit < x_fraction,  # this is True with the probability of p_fraction
-        x_bf16_towards_zero
-        + 0x10000,  # this might overflow, which will result in UB due to signed integer
-        x_bf16_towards_zero,
-    )
-    # alternative, slightly faster
-    # x_f32_bits = (x_f32_bits + rand_16bit) & 0xFFFF0000
-    return x_f32_bits.view(torch.float32).bfloat16()
-
-
-try:
-    import torchao
-
-    torchao.optim.quant_utils._fp32_to_bf16_sr = _fp32_to_bf16_sr
-except ImportError:
-    pass
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        print(ctx.message)
+        return grad_output, None

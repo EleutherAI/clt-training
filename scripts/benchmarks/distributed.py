@@ -17,7 +17,7 @@ def time(fn, *args, compiled=True, **kwargs):
         globals={"fn": fn, "args": args, "kwargs": kwargs},
     ).blocked_autorange()
     print(fn.__name__, timer.mean)
-
+    return timer.mean
 
 
 dtype = torch.bfloat16
@@ -27,6 +27,15 @@ D = 2048
 K = 32
 E = 2**17
 
+encoder_flops = 2 * B * D * E
+# decoder_flops = 2 * B * K * D
+sparse_bytes = 2 * B * (K + 1) * D
+
+gpu_flops = 150e12
+gpu_membw = 696e9
+
+seconds_forward = encoder_flops / gpu_flops + sparse_bytes / gpu_membw
+seconds_backward = encoder_flops / gpu_flops + 3 * sparse_bytes / gpu_membw
 
 local_rank = os.environ.get("LOCAL_RANK")
 distributed = local_rank is not None
@@ -69,7 +78,8 @@ with (nullcontext() if rank == 0 else redirect_stdout(None)):
         D,
         cfg=SparseCoderConfig(
             dtype="bfloat16",
-            activation="topk",
+            # activation="topk",
+            activation="groupmax",
             num_latents=E,
             k=K,
             transcode=True,
@@ -85,10 +95,16 @@ with (nullcontext() if rank == 0 else redirect_stdout(None)):
         return coder(x, y)
 
     def forward_backward_pass(coder, x, y):
-        coder(x)(y, 0).fvu.backward()
+        loss = coder(x)(y, 0).fvu
+        loss.backward()
 
-    time(forward_pass, sparse_coder, data, out_data, compiled=True)
-    forward_backward_pass(sparse_coder, data, out_data)
-    # time(forward_backward_pass, sparse_coder, data, out_data, compiled=False)
+    # forward_time = time(forward_pass, sparse_coder, data, out_data, compiled=True)
+    forward_time = time(forward_pass, sparse_coder, data, out_data, compiled=False)
+    print(f"Forward time: {forward_time} seconds, expected:", seconds_forward)
+    print(f"Forward utilization:", seconds_forward / forward_time)
+    # backward_time = time(forward_backward_pass, sparse_coder, data, out_data, compiled=True)
+    backward_time = time(forward_backward_pass, sparse_coder, data, out_data, compiled=False)
+    print(f"Backward time: {backward_time} seconds, expected:", seconds_backward)
+    print(f"Backward utilization:", seconds_backward / backward_time)
     print("Exiting")
     dist.destroy_process_group()

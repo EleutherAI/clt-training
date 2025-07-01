@@ -24,6 +24,7 @@ dependencies = [
     "torch==2.7.1",
     "torchao>=0.11.0",
     "transformers",
+    "triton>=2.1.0",
     "wandb>=0.19.11",
     "wandb-workspaces>=0.1.16",
 ]
@@ -38,7 +39,7 @@ sparsify = "sparsify.__main__:run"
 
 [[tool.uv.index]]
 name = "pytorch"
-url = "https://download.pytorch.org/whl/cu128"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 [tool.uv]
 prerelease = "allow"
@@ -47,6 +48,9 @@ torch = [
     { index = "pytorch" },
 ]
 triton = [
+    { index = "pytorch" }
+]
+torchao = [
     { index = "pytorch" }
 ]
 

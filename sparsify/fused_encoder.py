@@ -25,7 +25,7 @@ class EncoderOutput(NamedTuple):
 
 
 class FusedEncoder(torch.autograd.Function):
-    # @torch.compile
+    @torch.compile
     @staticmethod
     def forward(
         ctx,
@@ -42,7 +42,8 @@ class FusedEncoder(torch.autograd.Function):
         bias:   (M,)
         k:      int (number of top elements to select along dim=1)
         """
-        preacts = F.relu(linear(input, weight, bias, use_fp8))
+        preacts = linear(input, weight, bias, use_fp8)
+        preacts.relu_()
 
         if activation == "batchtopk":
             preacts = batch_topk(preacts, k)
@@ -146,7 +147,8 @@ class FusedEncoder(torch.autograd.Function):
         ctx.save_for_backward(input, weight, bias, indices, values)
         ctx.k = k
         ctx.activation = activation
-        return values, indices, preacts
+        # return values, indices, preacts
+        return values, indices, None
 
     # @torch.compile
     @staticmethod
@@ -217,7 +219,7 @@ class FusedEncoder(torch.autograd.Function):
                 )
             else:
                 mesh = grad_values.device_mesh
-                local_grad_weight = torch.zeros_like(weight.to_local())
+                local_weight = weight.to_local()
                 gathered_input = input.redistribute(
                     mesh, (dtensor.Replicate(), dtensor.Replicate())
                 ).to_local()
@@ -245,13 +247,13 @@ class FusedEncoder(torch.autograd.Function):
                     mask = (indices >= start_feature) & (indices < end_feature)
                     values *= mask.type_as(values)
                     indices = (indices - start_feature).clamp(
-                        0, local_grad_weight.shape[0] - 1
+                        0, local_weight.shape[0] - 1
                     )
-                local_grad_weight += triton_sparse_transpose_dense_matmul(
+                local_grad_weight = triton_sparse_transpose_dense_matmul(
                     indices,
                     values.float(),
                     gathered_input,
-                    N=local_grad_weight.shape[0],
+                    N=local_weight.shape[0],
                 )
                 grad_weight = dtensor.DTensor.from_local(
                     local_grad_weight,

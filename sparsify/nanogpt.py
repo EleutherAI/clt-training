@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import Tensor
 from torch.distributed.tensor import DTensor
+from torch.distributed.tensor.experimental import local_map
 
 # Custom operators: FP8 matmul by @YouJiacheng
 
@@ -302,7 +303,17 @@ def linear(
 ):
     if use_fp8 and x.dtype == torch.bfloat16:
         _x = x.flatten(0, -2)
-        out: Tensor = torch.ops.nanogpt.mm(_x, weight, x_s=1.0, w_s=1.0, grad_s=1.0)[0]
+        mm = torch.ops.nanogpt.mm
+        if isinstance(_x, DTensor):
+            assert isinstance(weight, DTensor)
+            mesh = _x.device_mesh
+            mm = local_map(
+                mm,
+                device_mesh=mesh,
+                in_placements=(_x.placements, weight.placements),
+                out_placements=(_x.placements[0], weight.placements[0]),
+            )
+        out: Tensor = mm(_x, weight, x_s=1.0, w_s=1.0, grad_s=1.0)[0]
         if bias is not None:
             out += bias
         return out.reshape(*x.shape[:-1], -1)

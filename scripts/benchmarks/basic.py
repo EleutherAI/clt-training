@@ -18,10 +18,19 @@ data = torch.randn(B, D, device="cuda", dtype=dtype)
 values = torch.randn(B, K, device="cuda", dtype=dtype, requires_grad=True)
 indices = torch.randint(0, E, (B, K), device="cuda", dtype=torch.int32)
 #%%
+# with torch.no_grad():
+#     values_f32, W_dec_f32 = values.float(), W_dec.float()
+#     row_indices = torch.arange(indices.shape[0], device=indices.device, dtype=indices.dtype)
+#     row_indices = row_indices[:, None].expand(-1, indices.shape[1])
+#     # sparse_matrix_bf16 = torch.sparse_coo_tensor(torch.stack([row_indices.flatten(), indices.flatten()], dim=0), values.flatten(), (indices.shape[0], W_dec_f32.shape[0]))
+#     # dense_matrix = sparse_matrix_bf16.to_dense()
+#     sparse_matrix = torch.sparse_coo_tensor(torch.stack([row_indices.flatten(), indices.flatten()], dim=0), values_f32.flatten(), (indices.shape[0], W_dec_f32.shape[0]))
+#     # sparse_matrix = sparse_matrix.to_sparse_csr()
+#%%
 import torch.nn.functional as F
 import torch.utils.benchmark
 from sparsify.nanogpt import linear
-from sparsify.kernels import COODecoder
+from sparsify.kernels import COODecoder, triton_sparse_dense_matmul
 from sparsify.fused_encoder import fused_encoder, FusedEncoderCOO
 from sparsify.utils import decoder_impl
 
@@ -34,7 +43,41 @@ def time(fn, *args, compiled=True, **kwargs):
         globals={"fn": fn, "args": args, "kwargs": kwargs},
     ).blocked_autorange()
     print(fn.__name__, timer.mean)
+    return timer.mean
 
+@torch.no_grad()
+def decode_torch_emb_bag(indices, values, W_dec):
+    return torch.nn.functional.embedding_bag(indices, W_dec, per_sample_weights=values, mode="sum")
+
+@torch.no_grad()
+def decode_openai(indices, values, W_dec):
+    return triton_sparse_dense_matmul(indices, values, W_dec)
+
+@torch.no_grad()
+def decode_xformers(indices, values, W_dec):
+    return decoder_impl(indices, values, W_dec)
+
+@torch.no_grad()
+def decode_torch_sparse(sparse_matrix, W_dec):
+    return sparse_matrix @ W_dec
+
+@torch.no_grad()
+def decode_torch_dense(dense_matrix, W_dec):
+    return dense_matrix @ W_dec
+
+# time(decode_torch_emb_bag, indices, values, W_dec)
+# time(decode_openai, indices, values, W_dec)
+decode_time = time(decode_xformers, indices, values, W_dec)
+# time(decode_torch_sparse, sparse_matrix, W_dec_f32)
+# time(decode_torch_dense, dense_matrix, W_dec)
+
+sparse_bytes = 2 * B * (K + 1) * D
+gpu_flops = 150e12
+gpu_membw = 696e9
+seconds_decoder = sparse_bytes / gpu_membw
+print(f"Decoder time: {decode_time} seconds, expected: {seconds_decoder}")
+print(f"Decoder utilization: {seconds_decoder / decode_time}")
+#%%
 @torch.no_grad()
 def forward_topk(data, W_enc):
     return torch.topk(data @ W_enc.T, k=K, dim=-1)

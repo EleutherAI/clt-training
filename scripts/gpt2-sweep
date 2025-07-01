@@ -19,6 +19,8 @@ else
         CROSSING="--activation=batchtopk --cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$3" == "nonskip" ]; then
         CROSSING="" SKIP=""
+    elif [ "$3" == "nonskip-no-affine" ]; then
+        CROSSING="--train_post_encoder=False" SCALING="" SKIP=""
     elif [ "$3" == "nonskip-tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False" SKIP=""
     elif [ "$3" == "nonskip-tied-no-affine" ]; then

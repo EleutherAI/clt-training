@@ -7,10 +7,16 @@ NAME=$1
 SAVE_DIR=$PWD/results/gpt2-eval/$NAME
 mkdir -p $SAVE_DIR
 
-PROMPT_NAME=alice-$NAME
 SCAN=$MODEL_NAME-$NAME
 set -e
-PROMPT_TEXT="<|endoftext|>In another moment, down went Alice after it, never once considering how in the world she was to get out again."
+if [ -z "$pn" ]; then
+    pn=alice
+fi
+PROMPT_NAME=$pn-$NAME
+if [ -z "$pt" ]; then
+    pt="<|endoftext|>In another moment, down went Alice after it, never once considering how in the world she was to get out again."
+fi
+PROMPT_TEXT=$pt
 # PROMPT_TEXT="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
 cd ../attribution_graph
 uv run python -m attribute \
