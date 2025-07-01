@@ -340,6 +340,12 @@ class MatryoshkaRunner:  # noqa: D101
             # Create a new MidDecoder with the slice-specific activations and indices
             sliced_mid = mid_out.copy(activations=values, indices=indices)
             
+            # Ensure the copied MidDecoder has proper gradient tracking setup
+            if detach_grad and not hasattr(sliced_mid, "original_activations"):
+                sliced_mid.original_activations = sliced_mid.latent_acts
+                sliced_mid.latent_acts = sliced_mid.latent_acts.detach()
+                sliced_mid.latent_acts.requires_grad = True
+            
             # --------------------------------------------------
             # Decode this slice with full coalescing logic
             # --------------------------------------------------
