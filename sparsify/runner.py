@@ -576,7 +576,7 @@ class MatryoshkaRunner:  # noqa: D101
                     restorable.restore(True)
                     #print(f"    Successfully restored {hookpoint}")
                 except Exception as e:
-                    #print(f"    Error restoring {hookpoint}: {e}")
+                    print(f"    Error restoring {hookpoint}: {e}")
                     # Continue with other restorations
         self.to_restore.clear()
 
