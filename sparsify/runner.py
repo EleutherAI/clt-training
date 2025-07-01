@@ -261,12 +261,11 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
 
         # --------------------------------------------------
-        # Single-pass Matryoshka processing with shape consistency
+        # Optimized Matryoshka processing: compute largest slice first, then smaller slices
         # --------------------------------------------------
-        print(f"\n--- Processing all {len(k_values)} slices in single pass ---")
+        print(f"\n--- Optimized processing: largest slice first, then smaller slices ---")
         
         # Create a single MidDecoder that we'll modify for each slice
-        # This ensures we maintain the original shapes throughout
         working_mid = mid_out.copy()
         
         # Ensure proper gradient tracking setup
@@ -276,8 +275,11 @@ class MatryoshkaRunner:  # noqa: D101
         # Store the working_mid in outputs for gradient restoration
         self.outputs[module_name] = working_mid
         
-        for i, k_i in enumerate(k_values):
-            print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
+        # Process slices in reverse order (largest to smallest) for efficiency
+        # The largest slice is identical to what CrossLayerRunner would do
+        for i, k_i in enumerate(reversed(k_values)):
+            slice_idx = len(k_values) - 1 - i  # Convert back to original index
+            print(f"\n--- Slice {slice_idx + 1}/{len(k_values)}: k={k_i} ---")
             
             # Create a mask for the subset of latent space for this slice
             subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < k_i
@@ -323,30 +325,32 @@ class MatryoshkaRunner:  # noqa: D101
             working_mid.latent_indices = mid_out.latent_indices
             
             # Decode this slice with full coalescing logic
+            # For the largest slice (i=0), this is identical to CrossLayerRunner
             out_slice = self._decode_slice(
                 working_mid,
                 y,
                 module_name,
                 detach_grad=detach_grad,
-                advance=(advance and i == len(k_values) - 1),
+                advance=(advance and i == 0),  # Only advance for the largest slice
                 **kwargs,
             )
 
-            print(f"  Slice {i+1} results:")
+            print(f"  Slice {slice_idx + 1} results:")
             print(f"    FVU: {out_slice.fvu.item():.6f}")
             print(f"    AuxK: {out_slice.auxk_loss.item():.6f}")
             print(f"    Multi-TopK: {out_slice.multi_topk_fvu.item():.6f}")
             print(f"    Output shape: {out_slice.sae_out.shape}")
 
-            slice_outputs.append(out_slice)
+            # Store in correct order (smallest to largest)
+            slice_outputs.insert(0, out_slice)
             total_fvu += out_slice.fvu
             total_aux += out_slice.auxk_loss
             total_multi += out_slice.multi_topk_fvu
 
         n_slices = len(k_values)
-        avg_fvu = total_fvu / n_slices
-        avg_aux = total_aux / n_slices
-        avg_multi = total_multi / n_slices
+        sum_fvu = total_fvu  # Use sum instead of average
+        sum_aux = total_aux  # Use sum instead of average
+        sum_multi = total_multi  # Use sum instead of average
 
         print(f"\n{'='*40}")
         print(f"Loss Aggregation Results:")
@@ -355,23 +359,23 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Total FVU: {total_fvu.item():.6f}")
         print(f"Total AuxK: {total_aux.item():.6f}")
         print(f"Total Multi-TopK: {total_multi.item():.6f}")
-        print(f"Average FVU: {avg_fvu.item():.6f}")
-        print(f"Average AuxK: {avg_aux.item():.6f}")
-        print(f"Average Multi-TopK: {avg_multi.item():.6f}")
+        print(f"Sum FVU: {sum_fvu.item():.6f}")
+        print(f"Sum AuxK: {sum_aux.item():.6f}")
+        print(f"Sum Multi-TopK: {sum_multi.item():.6f}")
 
         # ------------------------------------------------------------------
         # Build combined ``ForwardOutput`` using the largest slice's object as a
-        # template, but patch the losses to averaged versions.
+        # template, but patch the losses to summed versions.
         # ------------------------------------------------------------------
         # Use the largest slice (last slice) for the final output
         largest_slice_output = slice_outputs[-1]
         
-        # Create final output with largest slice values but averaged losses
+        # Create final output with largest slice values but summed losses
         final_output = replace(
             largest_slice_output,
-            fvu=avg_fvu,
-            auxk_loss=avg_aux,
-            multi_topk_fvu=avg_multi,
+            fvu=sum_fvu,
+            auxk_loss=sum_aux,
+            multi_topk_fvu=sum_multi,
         )
         
         print(f"\n{'='*40}")
@@ -475,16 +479,17 @@ class MatryoshkaRunner:  # noqa: D101
 
         # ------------------------------------------------------------------
         # Build combined ``ForwardOutput`` using the largest slice's object as a
-        # template, but patch the losses to averaged versions.
+        # template, but patch the losses to TOTAL, NOT AVERAGE versions.
+        # motivation - larger models have larger loss values, we focus more on prefix accuracy, gradients will be stronger for earlier prefixes
         # ------------------------------------------------------------------
         main_out = slice_outputs[-1]
         final_output = replace(
             main_out,
             latent_acts=slice_outputs[-1].latent_acts,
             latent_indices=slice_outputs[-1].latent_indices,
-            fvu=avg_fvu,
-            auxk_loss=avg_aux,
-            multi_topk_fvu=avg_multi,
+            fvu=total_fvu,
+            auxk_loss=total_aux,
+            multi_topk_fvu=total_multi,
         )
         
         print(f"\n{'='*40}")
