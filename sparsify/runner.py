@@ -481,6 +481,7 @@ class MatryoshkaRunner:  # noqa: D101
         # Build combined ``ForwardOutput`` using the largest slice's object as a
         # template, but patch the losses to TOTAL, NOT AVERAGE versions.
         # motivation - larger models have larger loss values, we focus more on prefix accuracy, gradients will be stronger for earlier prefixes
+        # we are following the training procdeure described in bussman et al. 2024
         # ------------------------------------------------------------------
         main_out = slice_outputs[-1]
         final_output = replace(
