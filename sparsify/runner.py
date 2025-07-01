@@ -239,10 +239,10 @@ class MatryoshkaRunner:  # noqa: D101
             mid_out.latent_acts = mid_out.latent_acts.detach()
             mid_out.latent_acts.requires_grad = True
 
-        # For each slice, we'll apply the full encoder pipeline (batchtopk + top-k) to that slice
-        # This mimics what CrossLayerRunner does but applied to each slice separately
+        # Compute pre-activations once and then apply batchtopk + top-k to each slice
+        # This avoids creating multiple computation graphs
         
-        # Get the original input and encoder weights to re-encode each slice
+        # Get the original input and encoder weights
         x = mid_out.x
         encoder_weight = mid_out.sparse_coder.encoder.weight
         encoder_bias = mid_out.sparse_coder.encoder.bias
@@ -254,54 +254,59 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Using activation: {activation}")
         print(f"Using k: {k}")
 
+        # Compute pre-activations once (linear + ReLU)
+        import torch.nn.functional as F
+        pre_acts = F.relu(F.linear(x, encoder_weight, encoder_bias))
+        print(f"Pre-activations shape: {pre_acts.shape}")
+        print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
+
         for i, k_i in enumerate(k_values):
             print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
             
             # --------------------------------------------------
-            # Apply the full encoder pipeline to this slice
+            # Apply batchtopk + top-k to this slice
             # --------------------------------------------------
             # Create a mask for the subset of latent space for this slice
-            subset_mask = torch.arange(encoder_weight.shape[0], device=encoder_weight.device) < k_i
+            subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < k_i
             
-            # Apply the mask to the encoder weights to get slice-specific encoding
-            # This effectively creates a smaller encoder for this slice
-            subset_encoder_weight = encoder_weight * subset_mask.float().unsqueeze(1)
-            subset_encoder_bias = encoder_bias * subset_mask.float()
+            # Apply the mask to get the subset of pre-activations
+            subset_pre_acts = pre_acts * subset_mask.float()
             
             print(f"  Subset mask shape: {subset_mask.shape}")
             print(f"  Subset mask sum (active features): {subset_mask.sum().item():.0f}")
             print(f"  Subset mask percentage: {subset_mask.float().mean().item()*100:.1f}%")
-            print(f"  Subset encoder weight shape: {subset_encoder_weight.shape}")
-            print(f"  Subset encoder weight non-zero: {(subset_encoder_weight != 0).sum().item():.0f}")
+            print(f"  Subset pre-activations shape: {subset_pre_acts.shape}")
+            print(f"  Subset pre-activations non-zero: {(subset_pre_acts != 0).sum().item():.0f}")
 
-            # Apply the full encoder pipeline to this slice
-            # This includes batchtopk + top-k selection, just like the original encoder
-            from .fused_encoder import fused_encoder
+            # Apply batchtopk + top-k to the subset
+            from .fused_encoder import batch_topk
             
-            # Encode the input using the slice-specific encoder
-            slice_top_acts, slice_top_indices, slice_pre_acts = fused_encoder(
-                x,
-                subset_encoder_weight,
-                subset_encoder_bias,
-                k,
-                activation,
-                mid_out.sparse_coder.cfg.use_fp8,
-            )
+            if activation == "batchtopk":
+                # Apply batchtopk to the subset
+                subset_pre_acts = batch_topk(subset_pre_acts, k)
+                print(f"  Applied batchtopk to subset")
+            
+            # Apply top-k to the subset
+            subset_k = min(k, k_i)
+            values, indices = torch.topk(subset_pre_acts, subset_k, dim=1, sorted=False)
             
             print(f"  Slice encoding results:")
-            print(f"    Top activations shape: {slice_top_acts.shape}")
-            print(f"    Top indices shape: {slice_top_indices.shape}")
-            print(f"    Top indices range: {slice_top_indices.min().item():.0f} to {slice_top_indices.max().item():.0f}")
-            print(f"    Top activations non-zero: {(slice_top_acts != 0).sum().item():.0f}")
+            print(f"    Top activations shape: {values.shape}")
+            print(f"    Top indices shape: {indices.shape}")
+            print(f"    Top indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
+            print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
             # Create a new MidDecoder with the slice-specific activations and indices
-            sliced_mid = mid_out.copy(activations=slice_top_acts, indices=slice_top_indices)
+            # Detach the activations to avoid gradient conflicts between slices
+            values_detached = values.detach()
+            values_detached.requires_grad = True
+            
+            sliced_mid = mid_out.copy(activations=values_detached, indices=indices)
             
             # Ensure the copied MidDecoder has proper gradient tracking setup
             if detach_grad and not hasattr(sliced_mid, "original_activations"):
-                sliced_mid.original_activations = sliced_mid.latent_acts
-                sliced_mid.latent_acts = sliced_mid.latent_acts.detach()
-                sliced_mid.latent_acts.requires_grad = True
+                sliced_mid.original_activations = values_detached
+                # The activations are already detached above
             
             # --------------------------------------------------
             # Decode this slice with full coalescing logic
