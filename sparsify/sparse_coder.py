@@ -78,9 +78,16 @@ class MidDecoder:
             pre_acts = self.pre_acts
         if dead_mask is None:
             dead_mask = self.dead_mask
-        return MidDecoder(
+        
+        new_mid = MidDecoder(
             self.sparse_coder, x, activations, indices, pre_acts, dead_mask
         )
+        
+        # Copy gradient tracking state if it exists
+        if hasattr(self, "original_activations"):
+            new_mid.original_activations = self.original_activations
+        
+        return new_mid
 
     def detach(self):
         if not hasattr(self, "original_activations"):

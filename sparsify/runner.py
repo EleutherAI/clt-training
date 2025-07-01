@@ -554,9 +554,17 @@ class MatryoshkaRunner:  # noqa: D101
         )
 
     def restore(self):
-        for restorable, was_last in self.to_restore.values():
+        print(f"MatryoshkaRunner.restore(): Restoring {len(self.to_restore)} objects")
+        for hookpoint, (restorable, was_last) in self.to_restore.items():
+            print(f"  Restoring {hookpoint}: was_last={was_last}")
             if was_last:
-                restorable.restore(True)
+                print(f"    Calling restore(True) on {hookpoint}")
+                try:
+                    restorable.restore(True)
+                    print(f"    Successfully restored {hookpoint}")
+                except Exception as e:
+                    print(f"    Error restoring {hookpoint}: {e}")
+                    # Continue with other restorations
         self.to_restore.clear()
 
     def reset(self):
