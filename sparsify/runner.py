@@ -214,6 +214,9 @@ class MatryoshkaRunner:  # noqa: D101
         Instead of applying top-k once to the whole latent space and then masking,
         we apply top-k separately to each subset of the latent space for each slice.
         """
+        import time
+        start_time = time.time()
+        
         print(f"\n{'='*60}")
         print(f"MatryoshkaRunner: Processing {module_name}")
         print(f"{'='*60}")
@@ -224,12 +227,24 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Original indices shape: {mid_out.latent_indices.shape}")
         print(f"Original indices range: {mid_out.latent_indices.min().item():.0f} to {mid_out.latent_indices.max().item():.0f}")
 
+        total_fvu = mid_out.latent_acts.new_tensor(0.0)
+        total_aux = mid_out.latent_acts.new_tensor(0.0)
+        total_multi = mid_out.latent_acts.new_tensor(0.0)
+        slice_outputs = []
+
+        print(f"\n{'='*40}")
+        print(f"Processing {len(k_values)} Matryoshka slices (per-slice top-k approach):")
+        print(f"{'='*40}")
+
         # Ensure the original mid_out has proper gradient tracking setup
         if detach_grad and not hasattr(mid_out, "original_activations"):
             mid_out.original_activations = mid_out.latent_acts
             mid_out.latent_acts = mid_out.latent_acts.detach()
             mid_out.latent_acts.requires_grad = True
 
+        # Compute pre-activations once and then apply batchtopk + top-k to each slice
+        # This avoids creating multiple computation graphs
+        
         # Get the original input and encoder weights
         x = mid_out.x
         encoder_weight = mid_out.sparse_coder.encoder.weight
@@ -243,39 +258,70 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Using k: {k}")
 
         # Compute pre-activations once (linear + ReLU)
+        pre_act_start = time.time()
         import torch.nn.functional as F
         pre_acts = F.relu(F.linear(x, encoder_weight, encoder_bias))
+        pre_act_time = time.time() - pre_act_start
         print(f"Pre-activations shape: {pre_acts.shape}")
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
+        print(f"Pre-activation computation time: {pre_act_time:.4f}s")
 
         # --------------------------------------------------
-        # Ultra-optimized Matryoshka processing: compute losses only once
+        # Ultra-optimized Matryoshka processing: cross-layer coalescing only for largest slice
         # --------------------------------------------------
-        print(f"\n--- Ultra-optimized processing: single loss computation ---")
+        # ALTERNATIVE OPTIMIZATION STRATEGIES (if current approach is still too slow):
+        # 
+        # 1. BATCH SLICE PROCESSING:
+        #    - Process all slices in parallel using torch.vmap or manual batching
+        #    - Apply top-k to all slices simultaneously
+        #    - Decode all slices in a single batch operation
+        #
+        # 2. CACHE SHARED COMPUTATIONS:
+        #    - Cache the pre-activations across slices
+        #    - Cache decoder outputs for overlapping indices
+        #    - Reuse gradient computations where possible
+        #
+        # 3. REDUCE SLICE COUNT:
+        #    - Use fewer Matryoshka slices (e.g., 2 instead of 3)
+        #    - Use larger k differences between slices
+        #
+        # 4. OPTIMIZE DECODER CALLS:
+        #    - Use no_grad() for smaller slices if gradients aren't needed
+        #    - Skip auxk_loss and multi_topk_fvu for smaller slices
+        #    - Use faster decoder implementations
+        #
+        # 5. MEMORY OPTIMIZATION:
+        #    - Process slices in-place to reduce memory allocations
+        #    - Use torch.compile() for the slice processing loop
+        #    - Optimize tensor operations to avoid unnecessary copies
+        #
+        print(f"\n--- Ultra-optimized processing: cross-layer coalescing only for largest slice ---")
         
         # Process slices in reverse order (largest to smallest)
         largest_slice_output = None
-        total_fvu = mid_out.latent_acts.new_tensor(0.0)
-        total_aux = mid_out.latent_acts.new_tensor(0.0)
-        total_multi = mid_out.latent_acts.new_tensor(0.0)
         
         for i, k_i in enumerate(reversed(k_values)):
+            slice_start_time = time.time()
             slice_idx = len(k_values) - 1 - i  # Convert back to original index
             print(f"\n--- Slice {slice_idx + 1}/{len(k_values)}: k={k_i} ---")
             
             # Create a mask for the subset of latent space for this slice
+            mask_start = time.time()
             subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < k_i
             
             # Apply the mask to get the subset of pre-activations
             subset_pre_acts = pre_acts * subset_mask.float()
+            mask_time = time.time() - mask_start
             
             print(f"  Subset mask shape: {subset_mask.shape}")
             print(f"  Subset mask sum (active features): {subset_mask.sum().item():.0f}")
             print(f"  Subset mask percentage: {subset_mask.float().mean().item()*100:.1f}%")
             print(f"  Subset pre-activations shape: {subset_pre_acts.shape}")
             print(f"  Subset pre-activations non-zero: {(subset_pre_acts != 0).sum().item():.0f}")
+            print(f"  Masking time: {mask_time:.4f}s")
 
             # Apply batchtopk + top-k to the subset
+            topk_start = time.time()
             from .fused_encoder import batch_topk
             
             if activation == "batchtopk":
@@ -285,14 +331,17 @@ class MatryoshkaRunner:  # noqa: D101
             
             # Apply top-k to the subset
             values, indices = torch.topk(subset_pre_acts, k, dim=1, sorted=False)
+            topk_time = time.time() - topk_start
             
             print(f"  Slice encoding results:")
             print(f"    Top activations shape: {values.shape}")
             print(f"    Top indices shape: {indices.shape}")
             print(f"    Top indices range: {indices.min().item():.0f} to {indices.max().item():.0f}")
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
+            print(f"    Top-k computation time: {topk_time:.4f}s")
 
             # Create a MidDecoder for this slice
+            mid_creation_start = time.time()
             slice_mid = mid_out.copy()
             
             # Update the slice MidDecoder with slice-specific values
@@ -312,6 +361,8 @@ class MatryoshkaRunner:  # noqa: D101
             # Ensure proper gradient tracking setup
             if detach_grad and not hasattr(slice_mid, "original_activations"):
                 slice_mid.original_activations = mid_out.original_activations
+            mid_creation_time = time.time() - mid_creation_start
+            print(f"  MidDecoder creation time: {mid_creation_time:.4f}s")
             
             # Only do full cross-layer coalescing and decoding for the largest slice (i=0)
             if i == 0:
@@ -322,6 +373,7 @@ class MatryoshkaRunner:  # noqa: D101
                 self.outputs[module_name] = slice_mid
                 
                 # Do full cross-layer coalescing and decoding
+                decode_start = time.time()
                 largest_slice_output = self._decode_slice(
                     slice_mid,
                     y,
@@ -330,14 +382,17 @@ class MatryoshkaRunner:  # noqa: D101
                     advance=advance,  # Advance for the largest slice
                     **kwargs,
                 )
+                decode_time = time.time() - decode_start
                 
                 print(f"  Largest slice results:")
                 print(f"    FVU: {largest_slice_output.fvu.item():.6f}")
                 print(f"    AuxK: {largest_slice_output.auxk_loss.item():.6f}")
                 print(f"    Multi-TopK: {largest_slice_output.multi_topk_fvu.item():.6f}")
                 print(f"    Output shape: {largest_slice_output.sae_out.shape}")
+                print(f"    Cross-layer decode time: {decode_time:.4f}s")
                 
                 # Store the largest slice output
+                slice_outputs.insert(0, largest_slice_output)
                 total_fvu += largest_slice_output.fvu
                 total_aux += largest_slice_output.auxk_loss
                 total_multi += largest_slice_output.multi_topk_fvu
@@ -348,23 +403,30 @@ class MatryoshkaRunner:  # noqa: D101
                 
                 # Compute losses directly without cross-layer coalescing
                 # This is much faster as it avoids the expensive cross-layer operations
+                direct_decode_start = time.time()
                 out_slice = slice_mid(
                     y,
                     index=0,
                     add_post_enc=False,
                     **kwargs,
                 )
+                direct_decode_time = time.time() - direct_decode_start
                 
                 print(f"  Smaller slice results:")
                 print(f"    FVU: {out_slice.fvu.item():.6f}")
                 print(f"    AuxK: {out_slice.auxk_loss.item():.6f}")
                 print(f"    Multi-TopK: {out_slice.multi_topk_fvu.item():.6f}")
                 print(f"    Output shape: {out_slice.sae_out.shape}")
+                print(f"    Direct decode time: {direct_decode_time:.4f}s")
                 
                 # Store the smaller slice output
+                slice_outputs.insert(0, out_slice)
                 total_fvu += out_slice.fvu
                 total_aux += out_slice.auxk_loss
                 total_multi += out_slice.multi_topk_fvu
+
+            slice_total_time = time.time() - slice_start_time
+            print(f"  Total slice processing time: {slice_total_time:.4f}s")
 
         n_slices = len(k_values)
         avg_fvu = total_fvu / n_slices
@@ -387,7 +449,7 @@ class MatryoshkaRunner:  # noqa: D101
         # template, but patch the losses to averaged versions.
         # ------------------------------------------------------------------
         # Use the largest slice (last slice) for the final output
-       
+        largest_slice_output = slice_outputs[-1]
         
         # Create final output with largest slice values but averaged losses
         final_output = replace(
@@ -397,6 +459,7 @@ class MatryoshkaRunner:  # noqa: D101
             multi_topk_fvu=total_multi,
         )
         
+        total_time = time.time() - start_time
         print(f"\n{'='*40}")
         print(f"Final Output:")
         print(f"{'='*40}")
@@ -404,6 +467,7 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Final indices shape: {final_output.latent_indices.shape}")
         print(f"Final sae_out shape: {final_output.sae_out.shape}")
         print(f"Final losses - FVU: {final_output.fvu.item():.6f}, AuxK: {final_output.auxk_loss.item():.6f}, Multi-TopK: {final_output.multi_topk_fvu.item():.6f}")
+        print(f"Total MatryoshkaRunner time: {total_time:.4f}s")
         print(f"{'='*60}\n")
         
         return final_output
