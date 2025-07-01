@@ -287,8 +287,8 @@ class MatryoshkaRunner:  # noqa: D101
                 print(f"  Applied batchtopk to subset")
             
             # Apply top-k to the subset
-            subset_k = min(k, k_i)
-            values, indices = torch.topk(subset_pre_acts, subset_k, dim=1, sorted=False)
+            # Use the same k as the original encoder to maintain shape consistency
+            values, indices = torch.topk(subset_pre_acts, k, dim=1, sorted=False)
             
             print(f"  Slice encoding results:")
             print(f"    Top activations shape: {values.shape}")
@@ -297,16 +297,24 @@ class MatryoshkaRunner:  # noqa: D101
             print(f"    Top activations non-zero: {(values != 0).sum().item():.0f}")
 
             # Create a new MidDecoder with the slice-specific activations and indices
-            # Detach the activations to avoid gradient conflicts between slices
-            values_detached = values.detach()
-            values_detached.requires_grad = True
-            
-            sliced_mid = mid_out.copy(activations=values_detached, indices=indices)
+            # IMPORTANT: Keep the original activation shape to avoid gradient shape mismatches
+            # We'll use the original mid_out's activation shape and just update the values
+            if i == 0:
+                # For the first slice, create a copy with the same shape as original
+                sliced_mid = mid_out.copy()
+                # Update the activations and indices for this slice
+                sliced_mid.latent_acts = values.detach()
+                sliced_mid.latent_acts.requires_grad = True
+                sliced_mid.latent_indices = indices
+            else:
+                # For subsequent slices, reuse the same MidDecoder object but update values
+                sliced_mid.latent_acts = values.detach()
+                sliced_mid.latent_acts.requires_grad = True
+                sliced_mid.latent_indices = indices
             
             # Ensure the copied MidDecoder has proper gradient tracking setup
             if detach_grad and not hasattr(sliced_mid, "original_activations"):
-                sliced_mid.original_activations = values_detached
-                # The activations are already detached above
+                sliced_mid.original_activations = mid_out.original_activations
             
             # --------------------------------------------------
             # Decode this slice with full coalescing logic
@@ -348,12 +356,14 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Average Multi-TopK: {avg_multi.item():.6f}")
 
         # ------------------------------------------------------------------
-        # Build combined ``ForwardOutput`` using the last slice's object as a
+        # Build combined ``ForwardOutput`` using the largest slice's object as a
         # template, but patch the losses to averaged versions.
         # ------------------------------------------------------------------
         main_out = slice_outputs[-1]
         final_output = replace(
             main_out,
+            latent_acts=slice_outputs[-1].latent_acts,
+            latent_indices=slice_outputs[-1].latent_indices,
             fvu=avg_fvu,
             auxk_loss=avg_aux,
             multi_topk_fvu=avg_multi,
@@ -459,12 +469,14 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Average Multi-TopK: {avg_multi.item():.6f}")
 
         # ------------------------------------------------------------------
-        # Build combined ``ForwardOutput`` using the last slice's object as a
+        # Build combined ``ForwardOutput`` using the largest slice's object as a
         # template, but patch the losses to averaged versions.
         # ------------------------------------------------------------------
         main_out = slice_outputs[-1]
         final_output = replace(
             main_out,
+            latent_acts=slice_outputs[-1].latent_acts,
+            latent_indices=slice_outputs[-1].latent_indices,
             fvu=avg_fvu,
             auxk_loss=avg_aux,
             multi_topk_fvu=avg_multi,
