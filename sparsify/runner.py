@@ -244,6 +244,30 @@ class MatryoshkaRunner:  # noqa: D101
         print(f"Pre-activations shape: {pre_acts.shape}")
         print(f"Pre-activations range: {pre_acts.min().item():.6f} to {pre_acts.max().item():.6f}")
 
+        # Handle case where pre_acts is 1D (should be 2D with shape [batch_size, num_latents])
+        if len(pre_acts.shape) == 1:
+            print("Warning: pre_acts is 1D, reshaping to 2D")
+            # Reshape to [1, num_latents] if it's 1D
+            pre_acts = pre_acts.unsqueeze(0)  # Add batch dimension
+            print(f"Reshaped pre-activations shape: {pre_acts.shape}")
+        
+        # Verify pre_acts has the correct shape
+        if len(pre_acts.shape) != 2:
+            print(f"Warning: pre_acts has unexpected shape {pre_acts.shape}, falling back to masking approach")
+            return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
+        
+        # Check if batch size matches
+        expected_batch_size = mid_out.latent_acts.shape[0]
+        if pre_acts.shape[0] != expected_batch_size:
+            print(f"Warning: pre_acts batch size {pre_acts.shape[0]} doesn't match expected {expected_batch_size}")
+            if pre_acts.shape[0] == 1:
+                # Broadcast single batch to expected batch size
+                pre_acts = pre_acts.expand(expected_batch_size, -1)
+                print(f"Broadcasted pre_acts to shape: {pre_acts.shape}")
+            else:
+                print("Falling back to masking approach")
+                return self._decode_with_masking(mid_out, y, module_name, detach_grad, advance, **kwargs)
+
         for i, k_i in enumerate(k_values):
             print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
             
