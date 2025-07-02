@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 MODEL_NAME=gpt2
 CHECKPOINT_PATH=$PWD/checkpoints/gpt2-sweep
 NAME=$1

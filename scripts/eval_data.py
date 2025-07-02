@@ -50,6 +50,10 @@ for _, seq in zip((bar := trange(take_samples)), dataset):
     if mask.any():
         mask_tok = mask.tolist().index(True) + 2
         tokens = input_ids.tolist()[:mask_tok]
+        if tokenizer.eos_token_id in tokens:
+            continue
+        if tokenizer.encode(tokenizer.decode(tokens)) != tokens:
+            continue
         text = tokenizer.decode(tokens)
         if any(not c.isascii() for c in text):
             continue
@@ -59,4 +63,17 @@ for _, seq in zip((bar := trange(take_samples)), dataset):
         bar.set_postfix(completion=len(results) / target_size)
         if len(results) >= target_size:
             break
+#%%
+from pathlib import Path
+import json
+to_save = dict(
+    model_name=cfg.model,
+    dataset_name=cfg.dataset,
+    ctx_len=cfg.ctx_len,
+    min_len=min_len,
+    prompts=results,
+)
+save_path = Path("data/gpt2-eval-data")
+save_path.mkdir(parents=True, exist_ok=True)
+json.dump(to_save, open(save_path / "data.json", "w"))
 #%%
