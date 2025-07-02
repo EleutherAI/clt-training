@@ -721,6 +721,15 @@ class SparseCoder(nn.Module):
             enabled=torch.cuda.is_bf16_supported(),
         ):
             top_acts, top_indices, pre_acts = self.encode(x)
+            
+            # Since fused encoder no longer returns pre_acts, compute it manually if needed
+            if pre_acts is None and not self.multi_target:
+                import torch.nn.functional as F
+                x_norm = self.normalize_input(x)
+                if not self.cfg.transcode:
+                    x_norm = x_norm - self.b_dec
+                pre_acts = F.relu(F.linear(x_norm, self.encoder.weight, self.encoder.bias))
+            
             if self.multi_target:
                 pre_acts = None
 

@@ -245,6 +245,7 @@ class MatryoshkaRunner:  # noqa: D101
         activation = mid_out.sparse_coder.cfg.activation
 
         # Compute pre-activations once (linear + ReLU)
+        # Since fused encoder no longer returns pre_acts, we always compute it manually
         import torch.nn.functional as F
         pre_acts = F.relu(F.linear(x, encoder_weight, encoder_bias))
 
@@ -320,6 +321,9 @@ class MatryoshkaRunner:  # noqa: D101
             
             # Keep original indices shape to avoid dimension mismatches
             slice_mid.latent_indices = mid_out.latent_indices
+            
+            # Set pre_acts for auxiliary losses (since fused encoder no longer returns it)
+            slice_mid.pre_acts = pre_acts
             
             # Ensure proper gradient tracking setup
             if detach_grad and not hasattr(slice_mid, "original_activations"):
