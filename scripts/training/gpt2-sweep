@@ -15,6 +15,8 @@ else
         CROSSING=""
     elif [ "$3" == "btopk" ]; then
         CROSSING="--activation=batchtopk"
+    elif [ "$3" == "btopk-noskip" ]; then
+        CROSSING="--activation=batchtopk --train_post_encoder=False" SCALING="" SKIP=""
     elif [ "$3" == "btopk-tied" ]; then
         CROSSING="--activation=batchtopk --cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$3" == "nonskip" ]; then
@@ -34,6 +36,8 @@ else
         # CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False"
         CROSSING="--cross_layer=12 --divide_cross_layer=True"
         # CROSSING="--cross_layer=12"
+    elif [ "$3" == "btopk-clt-noskip" ]; then
+        CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
     else
         echo "Invalid option: $3"
         exit 1

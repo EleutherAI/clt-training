@@ -15,7 +15,7 @@ from torch.distributed import tensor as dtensor
 from torch.distributed.tensor.device_mesh import DeviceMesh
 
 from .config import SparseCoderConfig
-from .fused_encoder import EncoderOutput, fused_encoder
+from .fused_encoder import NO_COMPILE, EncoderOutput, fused_encoder
 from .utils import barrier, decoder_impl, load_sharded, save_sharded
 
 
@@ -668,7 +668,7 @@ class SparseCoder(nn.Module):
             return x * (self.out_norm / (x.shape[-1] ** 0.5))
         return x
 
-    @torch.compile
+    @torch.compile(disable=NO_COMPILE)
     def encode(self, x: Tensor) -> EncoderOutput:
         """Encode the input and select the top-k latents."""
         x = self.normalize_input(x)

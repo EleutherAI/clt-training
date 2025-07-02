@@ -48,3 +48,32 @@ plt.ylabel(f"{metric}")
 plt.xlabel("Model")
 plt.title(f"Circuit score ({len(result_set)} prompts), {model_name}")
 #%%
+sns.displot(x="result", data=all_results, kind="kde", hue="run_name", bw_adjust=0.7)
+plt.xlabel(f"{metric}")
+plt.title(f"Circuit score ({len(result_set)} prompts), {model_name}")
+#%%
+# Generate a scatter plot between all pairs of runs
+run_name_list = list(run_names.values())
+n_runs = len(run_name_list)
+
+plt.figure(figsize=(4 * n_runs, 4 * n_runs))
+for i in range(n_runs):
+    for j in range(n_runs):
+        if i == j:
+            continue
+        run_i = run_name_list[i]
+        run_j = run_name_list[j]
+        # Get results for the intersection set, already aligned in 'results'
+        x = results[run_i]
+        y = results[run_j]
+        plt.figure(figsize=(4, 4))
+        plt.scatter(x, y, alpha=0.7)
+        plt.xlabel(run_i)
+        plt.ylabel(run_j)
+        plt.title(f"Scatter: {run_j} vs {run_i} ({len(x)} prompts)")
+        # Optionally, plot y=x line
+        min_val = min(min(x), min(y))
+        max_val = max(max(x), max(y))
+        plt.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
+        plt.tight_layout()
+        plt.show()

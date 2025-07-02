@@ -1,3 +1,4 @@
+import os
 from typing import Literal, NamedTuple
 
 import torch
@@ -12,6 +13,8 @@ from .kernels import (
 from .nanogpt import linear
 from .utils import decoder_impl
 
+NO_COMPILE = os.environ.get("SPARSIFY_NO_COMPILE", "0") == "1"
+
 
 class EncoderOutput(NamedTuple):
     top_acts: torch.Tensor
@@ -25,7 +28,7 @@ class EncoderOutput(NamedTuple):
 
 
 class FusedEncoder(torch.autograd.Function):
-    @torch.compile
+    @torch.compile(disable=NO_COMPILE)
     @staticmethod
     def forward(
         ctx,
@@ -288,7 +291,7 @@ def batch_topk(preacts, k, return_indices=False):
         else:
             threshold = values.min()
             local_preacts[local_preacts < threshold] = 0
-            return local_preacts
+            return preacts
     else:
         values, indices = torch.topk(preacts.flatten(), expected_k, sorted=False)
         if return_indices:

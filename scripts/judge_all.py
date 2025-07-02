@@ -22,7 +22,7 @@ n_occupants = {gpu: 0 for gpu in available_gpus}
 start_end_mutex = threading.Lock()
 wake_up_signal = threading.Condition(start_end_mutex)
 
-def judge_run(run_name, prompt):
+def judge_run(run_name, prompt, i):
     with start_end_mutex:
         prompt_name = f"{judge_ctx}-{i}"
         results_path = f"../results/gpt2-eval/{prompt_name}-gpt2/results.json"
@@ -34,25 +34,27 @@ def judge_run(run_name, prompt):
         assert n_occupants[gpu] < n_can_run_parallel
         n_occupants[gpu] += 1
 
-    subprocess.check_call(
-        ["scripts/judge-gpt", run_name],
-        env=os.environ | dict(
-            pn=prompt_name,
-            pt=tokenizer.decode(prompt),
-            CUDA_VISIBLE_DEVICES=str(gpu),
-        ),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=os.path.dirname(os.path.dirname(__file__))
-    )
-    with start_end_mutex:
-        n_occupants[gpu] -= 1
-        wake_up_signal.notify()
+    try:
+        subprocess.check_call(
+            ["scripts/judge-gpt", run_name],
+            env=os.environ | dict(
+                pn=prompt_name,
+                pt=tokenizer.decode(prompt),
+                CUDA_VISIBLE_DEVICES=str(gpu),
+            ),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=os.path.dirname(os.path.dirname(__file__))
+        )
+    finally:
+        with start_end_mutex:
+            n_occupants[gpu] -= 1
+            wake_up_signal.notify()
 
 threads = []
-for prompt in eval_data["prompts"]:
+for i, prompt in enumerate(eval_data["prompts"]):
     for run_name in run_names:
-        thread = threading.Thread(target=judge_run, args=(run_name, prompt))
+        thread = threading.Thread(target=judge_run, args=(run_name, prompt, i))
         threads.append(thread)
         thread.start()
 for thread in tqdm(threads, desc=f"Evaluating runs"):
