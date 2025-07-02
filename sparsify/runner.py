@@ -11,36 +11,72 @@ from torch.distributed.tensor.experimental import local_map
 from .sparse_coder import MidDecoder, SparseCoder, MatryoshkaEncoderOutput
 from .utils import decoder_impl
 
-__all__ = ["MatryoshkaRunner"]
 
 
 
+"""Matryoshka-style runner that applies top-k selection separately to different slices of the latent space.
 
-"""Matryoshka‑style runner that *inherits all the cross‑layer coalescing tricks*
-from ``CrossLayerRunner`` **and** fixes the slice logic so it works when the
-base top‑k (cfg.k) is *smaller* than the Matryoshka slice sizes.
+**How it works:**
+1. For each slice size k_i, computes top-k selection on the corresponding subset of the latent space
+2. Computes all losses (FVU, AuxK, Multi-TopK) for each slice independently  
+3. Aggregates losses across all slices (summed, not averaged)
+4. Uses the largest slice for final output and cross-layer coalescing (if enabled)
 
-**Key change:** instead of carving contiguous blocks out of
-``latent_acts/latent_indices`` we *mask* out latents whose indices are ≥ kᵢ.
-This avoids empty tensors (and the associated ``min()`` error) when
-``cfg.k`` ≪ kᵢ.
+**Performance Benefits:**
+- No need to materialize pre_acts in the runner (computed only when needed in SparseCoder)
+- Eliminates complex gradient detachment/restoration dance
+- Only does expensive cross-layer coalescing for the largest slice
+- Much faster than the original masking approach
+
+**Cross-layer Coalescing:**
+- Inherits all cross-layer coalescing capabilities from CrossLayerRunner
+- Only applies coalescing to the largest slice to maintain performance
+- Simplified gradient management since we're just combining pre-computed results
+
+Paper:
+https://www.lesswrong.com/posts/rKM9b6B2LqwSB5ToN/learning-multi-level-features-with-matryoshka-saes
+
 """
 
 
 
-class MatryoshkaRunner:  # noqa: D101
-    # ---------------------------------------------------------------------
-    # Construction & bookkeeping
-    # ---------------------------------------------------------------------
+class MatryoshkaRunner: 
+    """Matryoshka-style runner that processes different slices of the latent space independently.
+    
+    This runner applies top-k selection separately to different subsets of the latent space,
+    computes losses for each slice, and aggregates them. It's designed for scenarios where
+    you want to analyze different granularities of feature selection simultaneously.
+    """
+    
     def __init__(self):
+        """Initialize the MatryoshkaRunner with empty state tracking.
+        
+        Attributes:
+            outputs: Maps module names to their MidDecoder objects for cross-layer coalescing
+            to_restore: Tracks MidDecoder objects that need gradient restoration (rarely used now)
+        """
         self.outputs: Dict[str, MidDecoder] = {}
         self.to_restore: Dict[str, Tuple[MidDecoder, bool]] = {}
 
-    # ---------------------------------------------------------------------
-    # Utilities
-    # ---------------------------------------------------------------------
+  
     @staticmethod
     def _matryoshka_sizes(mid: MidDecoder) -> List[int]:
+        """Determine the k-values for each Matryoshka slice based on configuration.
+        
+        This method reads the configuration to determine how many slices to create
+        and what size each slice should be. It supports three configuration modes:
+        
+        Args:
+            mid: MidDecoder containing the sparse coder configuration
+            
+        Returns:
+            List of k-values, one for each slice, sorted in ascending order
+            
+        Configuration priority:
+        1. matryoshka_k_values: Direct list of k-values [k1, k2, k3, ...]
+        2. matryoshka_expansion_factors: Multipliers applied to input dimension [1.0, 2.0, 4.0, ...]
+        3. Default: Single slice with the base k value from configuration
+        """
         cfg = mid.sparse_coder.cfg
         if cfg.matryoshka_k_values:
             return cfg.matryoshka_k_values
@@ -62,11 +98,29 @@ class MatryoshkaRunner:  # noqa: D101
         advance: bool,
         **kwargs,
     ):
-        """Single‑slice cross‑layer decode for MatryoshkaRunner.
+        """Perform cross-layer coalescing and decoding for a single slice.
         
-        Simplified version that doesn't use gradient detachment/restoration
-        since we're just coalescing pre-computed results from SparseCoder.
+        This method handles the cross-layer coalescing logic inherited from CrossLayerRunner.
+        It combines activations and indices from multiple layers, applies top-k selection
+        if enabled, and produces the final decoded output.
+        
+        The method is simplified compared to the original CrossLayerRunner because:
+        - We're working with pre-computed results from SparseCoder
+        - No complex gradient detachment/restoration is needed
+        - We're just coalescing already-computed slice results
+        
+        Args:
+            mid_out: MidDecoder for the current layer/slice
+            y: Target tensor for reconstruction
+            module_name: Name of the current module being processed
+            detach_grad: Whether to detach gradients (largely unused in this implementation)
+            advance: Whether to advance layer indices after processing
+            **kwargs: Additional arguments passed to MidDecoder calls
+            
+        Returns:
+            ForwardOutput containing the decoded result and loss information
         """
+        # Store the current layer's MidDecoder for cross-layer processing
         self.outputs[module_name] = mid_out
 
         candidate_indices = []
@@ -78,10 +132,8 @@ class MatryoshkaRunner:  # noqa: D101
         out, hookpoint = None, None  # type: ignore[misc]
 
         for i, (hookpoint, layer_mid) in enumerate(self.outputs.items()):
-            # No gradient detachment needed - we're just coalescing results
-            # if detach_grad:
-            #     layer_mid.detach()
-
+            # Calculate division factor for cross-layer normalization
+            # If divide_cross_layer is enabled, divide by (num_layers - 1)
             divide_by = (
                 max(1, len(self.outputs) - 1)
                 if layer_mid.sparse_coder.cfg.divide_cross_layer
@@ -94,9 +146,7 @@ class MatryoshkaRunner:  # noqa: D101
             candidate_indices.append(offset_indices)
             candidate_values.append(layer_mid.current_latent_acts)
 
-            # No gradient restoration setup needed
-            # if detach_grad and advance:
-            #     self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
+            
             if layer_mid.will_be_last:
                 to_delete.add(hookpoint)
 
@@ -211,10 +261,29 @@ class MatryoshkaRunner:  # noqa: D101
         advance: bool = True,
         **kwargs,
     ):
-        """Matryoshka decoding with per-slice top-k selection.
-
-        Instead of applying top-k once to the whole latent space and then masking,
-        we apply top-k separately to each subset of the latent space for each slice.
+        """Main Matryoshka decoding method that processes multiple slices independently.
+        
+        This is the core method that implements the Matryoshka approach. Instead of
+        applying top-k once to the whole latent space and then masking, it computes
+        slice-specific top-k results directly in the SparseCoder for each slice size.
+        
+        The method:
+        1. Determines slice sizes using _matryoshka_sizes()
+        2. Calls SparseCoder.encode_matryoshka_slices() to compute all slice results
+        3. Aggregates losses from all slices (summed, not averaged)
+        4. Uses the largest slice for final output and cross-layer coalescing
+        5. Provides detailed debug information about the process
+        
+        Args:
+            mid_out: MidDecoder containing the encoded input and sparse coder
+            y: Target tensor for reconstruction
+            module_name: Name of the current module being processed
+            detach_grad: Whether to detach gradients (largely unused in this implementation)
+            advance: Whether to advance layer indices after processing
+            **kwargs: Additional arguments passed to MidDecoder calls
+            
+        Returns:
+            ForwardOutput containing the decoded result and aggregated loss information
         """
         import time
         start_time = time.time()
@@ -225,7 +294,8 @@ class MatryoshkaRunner:  # noqa: D101
         
         k_values = sorted(self._matryoshka_sizes(mid_out))
 
-        # Use the new optimized method that computes slice results directly
+        # Use the optimized method that computes slice results directly in SparseCoder
+        # This avoids materializing pre_acts in the runner and is much more efficient
         matryoshka_output = mid_out.sparse_coder.encode_matryoshka_slices(
             x=mid_out.x,
             k_values=k_values,
@@ -234,7 +304,8 @@ class MatryoshkaRunner:  # noqa: D101
             loss_mask=kwargs.get('loss_mask'),
         )
         
-        # Aggregate losses from all slices
+        # Aggregate losses from all slices by summing them
+        # This gives us the total loss across all granularities
         total_fvu = sum(slice_result.fvu for slice_result in matryoshka_output.slice_results)
         total_aux = sum(slice_result.auxk_loss for slice_result in matryoshka_output.slice_results)
         total_multi = sum(slice_result.multi_topk_fvu for slice_result in matryoshka_output.slice_results)
@@ -252,13 +323,9 @@ class MatryoshkaRunner:  # noqa: D101
             None,  # pre_acts not needed for cross-layer coalescing
         )
         
-        # No gradient detachment needed - we're just coalescing pre-computed results
-        # if detach_grad:
-        #     largest_mid.detach()
-        
         # Only do cross-layer coalescing for the largest slice if needed
         if mid_out.sparse_coder.cfg.do_coalesce_topk:
-            # Store for gradient restoration
+            # Store the largest slice's MidDecoder for cross-layer processing
             self.outputs[module_name] = largest_mid
             
             # Do full cross-layer coalescing and decoding
@@ -326,121 +393,6 @@ class MatryoshkaRunner:  # noqa: D101
         total_time = time.time() - start_time
         print(f"MatryoshkaRunner time: {total_time:.4f}s")
         print(f"{'='*60}")
-        
-        return final_output
-
-    def _decode_with_masking(
-        self,
-        mid_out: MidDecoder,
-        y: Tensor,
-        module_name: str,
-        detach_grad: bool = False,
-        advance: bool = True,
-        **kwargs,
-    ):
-        """Fallback method using the original masking approach."""
-        print(f"\n{'='*60}")
-        print(f"MatryoshkaRunner: Processing {module_name} (masking fallback)")
-        print(f"{'='*60}")
-        
-        k_values = sorted(self._matryoshka_sizes(mid_out))
-        print(f"Matryoshka k-values: {k_values}")
-        print(f"Original activations shape: {mid_out.latent_acts.shape}")
-        print(f"Original indices shape: {mid_out.latent_indices.shape}")
-        print(f"Original indices range: {mid_out.latent_indices.min().item():.0f} to {mid_out.latent_indices.max().item():.0f}")
-
-        total_fvu = mid_out.latent_acts.new_tensor(0.0)
-        total_aux = mid_out.latent_acts.new_tensor(0.0)
-        total_multi = mid_out.latent_acts.new_tensor(0.0)
-        slice_outputs = []
-
-        print(f"\n{'='*40}")
-        print(f"Processing {len(k_values)} Matryoshka slices (masking approach):")
-        print(f"{'='*40}")
-
-        for i, k_i in enumerate(k_values):
-            print(f"\n--- Slice {i+1}/{len(k_values)}: k={k_i} ---")
-            
-            # --------------------------------------------------
-            # Mask activations outside the slice (idx ≥ kᵢ)
-            # --------------------------------------------------
-            mask = mid_out.latent_indices < k_i  # shape (B, cfg.k)
-            print(f"  Mask shape: {mask.shape}")
-            print(f"  Mask sum (active features): {mask.sum().item():.0f}")
-            print(f"  Mask percentage: {mask.float().mean().item()*100:.1f}%")
-
-            # Keep tensor shapes fixed so downstream code is happy
-            acts_slice = mid_out.latent_acts * mask.to(mid_out.latent_acts.dtype)
-            indices_slice = mid_out.latent_indices  # unchanged; activations outside slice are zero
-            sliced_mid = mid_out.copy(activations=acts_slice, indices=indices_slice)
-            
-            print(f"  Masked activations shape: {acts_slice.shape}")
-            print(f"  Masked activations non-zero: {(acts_slice != 0).sum().item():.0f}")
-            print(f"  Indices shape: {indices_slice.shape} (unchanged)")
-
-            # --------------------------------------------------
-            # Decode this slice with full coalescing logic
-            # --------------------------------------------------
-            out_slice = self._decode_slice(
-                sliced_mid,
-                y,
-                module_name,
-                detach_grad=detach_grad,
-                advance=(advance and i == len(k_values) - 1),
-                **kwargs,
-            )
-
-            print(f"  Slice {i+1} results:")
-            print(f"    FVU: {out_slice.fvu.item():.6f}")
-            print(f"    AuxK: {out_slice.auxk_loss.item():.6f}")
-            print(f"    Multi-TopK: {out_slice.multi_topk_fvu.item():.6f}")
-            print(f"    Output shape: {out_slice.sae_out.shape}")
-
-            slice_outputs.append(out_slice)
-            total_fvu += out_slice.fvu
-            total_aux += out_slice.auxk_loss
-            total_multi += out_slice.multi_topk_fvu
-
-        n_slices = len(k_values)
-        avg_fvu = total_fvu / n_slices
-        avg_aux = total_aux / n_slices
-        avg_multi = total_multi / n_slices
-
-        print(f"\n{'='*40}")
-        print(f"Loss Aggregation Results:")
-        print(f"{'='*40}")
-        print(f"Number of slices: {n_slices}")
-        print(f"Total FVU: {total_fvu.item():.6f}")
-        print(f"Total AuxK: {total_aux.item():.6f}")
-        print(f"Total Multi-TopK: {total_multi.item():.6f}")
-        print(f"Average FVU: {avg_fvu.item():.6f}")
-        print(f"Average AuxK: {avg_aux.item():.6f}")
-        print(f"Average Multi-TopK: {avg_multi.item():.6f}")
-
-        # ------------------------------------------------------------------
-        # Build combined ``ForwardOutput`` using the largest slice's object as a
-        # template, but patch the losses to TOTAL, NOT AVERAGE versions.
-        # motivation - larger models have larger loss values, we focus more on prefix accuracy, gradients will be stronger for earlier prefixes
-        # we are following the training procdeure described in bussman et al. 2024
-        # ------------------------------------------------------------------
-        main_out = slice_outputs[-1]
-        final_output = replace(
-            main_out,
-            latent_acts=slice_outputs[-1].latent_acts,
-            latent_indices=slice_outputs[-1].latent_indices,
-            fvu=total_fvu,
-            auxk_loss=total_aux,
-            multi_topk_fvu=total_multi,
-        )
-        
-        print(f"\n{'='*40}")
-        print(f"Final Output:")
-        print(f"{'='*40}")
-        print(f"Final activations shape: {final_output.latent_acts.shape}")
-        print(f"Final indices shape: {final_output.latent_indices.shape}")
-        print(f"Final sae_out shape: {final_output.sae_out.shape}")
-        print(f"Final losses - FVU: {final_output.fvu.item():.6f}, AuxK: {final_output.auxk_loss.item():.6f}, Multi-TopK: {final_output.multi_topk_fvu.item():.6f}")
-        print(f"{'='*60}\n")
         
         return final_output
 
@@ -519,9 +471,7 @@ class CrossLayerRunner(object):
         advance: bool = True,
         **kwargs,
     ):
-        print(f"\n{'='*60}")
-        print(f"CrossLayerRunner: Processing {module_name}")
-        print(f"{'='*60}")
+       
         
         self.outputs[module_name] = mid_out
 
@@ -533,24 +483,20 @@ class CrossLayerRunner(object):
         to_delete = set()
         out, hookpoint = None, None
         
-        print(f"Number of layers in outputs: {len(self.outputs)}")
-        print(f"Current layer activations shape: {mid_out.latent_acts.shape}")
-        print(f"Current layer indices shape: {mid_out.latent_indices.shape}")
-        print(f"Current layer indices range: {mid_out.latent_indices.min().item():.0f} to {mid_out.latent_indices.max().item():.0f}")
-        print(f"Cross-layer coalescing enabled: {mid_out.sparse_coder.cfg.do_coalesce_topk}")
+       
         
         for i, (hookpoint, layer_mid) in enumerate(self.outputs.items()):
-            print(f"\n--- Processing layer {i+1}/{len(self.outputs)}: {hookpoint} ---")
+            
             
             if detach_grad:
                 layer_mid.detach()
-                print(f"  Detached gradients for layer {hookpoint}")
+             
                 
             if layer_mid.sparse_coder.cfg.divide_cross_layer:
                 divide_by = max(1, len(self.outputs) - 1)
             else:
                 divide_by = 1
-            print(f"  Divide by factor: {divide_by}")
+          
             
             layer_mids.append(layer_mid)
             hookpoints.append(hookpoint)
@@ -558,22 +504,16 @@ class CrossLayerRunner(object):
             candidate_indices.append(offset_indices)
             candidate_values.append(layer_mid.current_latent_acts)
             
-            print(f"  Layer {hookpoint} info:")
-            print(f"    Original indices shape: {layer_mid.latent_indices.shape}")
-            print(f"    Original indices range: {layer_mid.latent_indices.min().item():.0f} to {layer_mid.latent_indices.max().item():.0f}")
-            print(f"    Offset indices shape: {offset_indices.shape}")
-            print(f"    Offset indices range: {offset_indices.min().item():.0f} to {offset_indices.max().item():.0f}")
-            print(f"    Activations shape: {layer_mid.current_latent_acts.shape}")
-            print(f"    Activations non-zero: {(layer_mid.current_latent_acts != 0).sum().item():.0f}")
+
             
             if detach_grad and advance:
                 self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
             if layer_mid.will_be_last:
                 to_delete.add(hookpoint)
-                print(f"  Layer {hookpoint} will be deleted after processing")
+           
                 
             if not mid_out.sparse_coder.cfg.do_coalesce_topk:
-                print(f"  Processing layer {hookpoint} without coalescing")
+                
                 out = layer_mid(
                     y,
                     addition=(0 if hookpoint != module_name else (output / divide_by)),
@@ -583,28 +523,20 @@ class CrossLayerRunner(object):
                 )
                 if hookpoint != module_name:
                     output += out.sae_out
-                    print(f"  Added layer output to running sum, current sum shape: {output.shape}")
-                else:
-                    print(f"  This is the target layer, using output directly")
+           
+             
             else:
                 layer_mid.next()
-                print(f"  Advanced layer {hookpoint} index to {layer_mid.index}")
-
         if mid_out.sparse_coder.cfg.do_coalesce_topk:
-            print(f"\n{'='*40}")
-            print(f"Cross-layer coalescing processing:")
-            print(f"{'='*40}")
+         
             
             candidate_indices = torch.cat(candidate_indices, dim=1)
             candidate_values = torch.cat(candidate_values, dim=1)
             
-            print(f"Concatenated indices shape: {candidate_indices.shape}")
-            print(f"Concatenated indices range: {candidate_indices.min().item():.0f} to {candidate_indices.max().item():.0f}")
-            print(f"Concatenated values shape: {candidate_values.shape}")
-            print(f"Concatenated values non-zero: {(candidate_values != 0).sum().item():.0f}")
+          
             
             if mid_out.sparse_coder.cfg.topk_coalesced:
-                print(f"Applying top-k coalescing with k={mid_out.sparse_coder.cfg.k}")
+                
                 if isinstance(candidate_values, DTensor):
 
                     def mapper(candidate_values, candidate_indices):
@@ -627,33 +559,30 @@ class CrossLayerRunner(object):
                     )
                     best_indices = torch.gather(candidate_indices, 1, best_indices)
                 
-                print(f"Top-k coalesced values shape: {best_values.shape}")
-                print(f"Top-k coalesced indices shape: {best_indices.shape}")
-                print(f"Top-k coalesced indices range: {best_indices.min().item():.0f} to {best_indices.max().item():.0f}")
+                
             else:
                 best_values = candidate_values
                 best_indices = candidate_indices
-                print(f"No top-k coalescing applied, using all concatenated values")
+    
             
-            print(f"Coalesce mode: {mid_out.sparse_coder.cfg.coalesce_topk}")
+
             
             if mid_out.sparse_coder.cfg.coalesce_topk == "concat":
-                print(f"Using concat mode - applying modulo to indices")
+  
                 best_indices = best_indices % mid_out.sparse_coder.num_latents
-                print(f"Modulo indices shape: {best_indices.shape}")
-                print(f"Modulo indices range: {best_indices.min().item():.0f} to {best_indices.max().item():.0f}")
+      
                 
                 new_mid_out = mid_out.copy(
                     indices=best_indices,
                     activations=best_values,
                 )
-                print(f"Created new MidDecoder with coalesced activations")
+
                 out = new_mid_out(y, index=0, add_post_enc=False, **kwargs)
                 if advance:
                     del mid_out.x
                     
             elif mid_out.sparse_coder.cfg.coalesce_topk == "per-layer":
-                print(f"Using per-layer mode - processing each layer separately")
+         
                 output = 0
                 for i, layer_mid in enumerate(layer_mids):
                     hookpoint = hookpoints[i]
@@ -661,18 +590,18 @@ class CrossLayerRunner(object):
                     if not is_ours:
                         continue
                         
-                    print(f"  Processing layer {hookpoint} (is_ours={is_ours})")
+  
                     num_latents = layer_mid.sparse_coder.num_latents
-                    print(f"    Layer num_latents: {num_latents}")
+  
                     
                     if is_ours:
                         best_indices_local = best_indices
                         best_values_local = best_values
-                        print(f"    Using global best indices/values for target layer")
+                        
                     else:
                         best_indices_local = None
                         best_values_local = None
-                        print(f"    Using None for non-target layer")
+        
                         
                     new_mid_out = layer_mid.copy(
                         indices=best_indices_local,
@@ -689,9 +618,9 @@ class CrossLayerRunner(object):
                     )
                     if hookpoint != module_name:
                         output += out.sae_out
-                        print(f"    Added to running sum, current sum shape: {output.shape}")
+                        
                     else:
-                        print(f"    This is target layer, using output directly")
+                        
                         if isinstance(out.latent_indices, DTensor):
                             out = replace(
                                 out,
@@ -707,7 +636,7 @@ class CrossLayerRunner(object):
                                 latent_indices=(out.latent_indices % num_latents)
                                 * (out.latent_indices // num_latents == i),
                             )
-                        print(f"    Applied per-layer index masking")
+                      
             else:
                 raise ValueError("Not implemented")
 
@@ -717,21 +646,14 @@ class CrossLayerRunner(object):
         if not advance:
             for layer_mid in layer_mids:
                 layer_mid.prev()
-            print(f"Reversed layer indices (not advancing)")
+            
 
         if advance:
             for hookpoint in to_delete:
                 del self.outputs[hookpoint]
-            print(f"Deleted {len(to_delete)} layers from outputs")
+           
 
-        print(f"\n{'='*40}")
-        print(f"Final Output:")
-        print(f"{'='*40}")
-        print(f"Final activations shape: {out.latent_acts.shape}")
-        print(f"Final indices shape: {out.latent_indices.shape}")
-        print(f"Final sae_out shape: {out.sae_out.shape}")
-        print(f"Final losses - FVU: {out.fvu.item():.6f}, AuxK: {out.auxk_loss.item():.6f}, Multi-TopK: {out.multi_topk_fvu.item():.6f}")
-        print(f"{'='*60}\n")
+
 
         return out
 
