@@ -62,11 +62,11 @@ class MatryoshkaRunner:  # noqa: D101
         advance: bool,
         **kwargs,
     ):
-        """Single‑slice cross‑layer decode copied from ``CrossLayerRunner``."""
-        # The body is identical to the original CrossLayerRunner.decode, so we
-        # keep it verbatim to preserve behaviour.  For brevity, only the Δ from
-        # upstream is commented.
-
+        """Single‑slice cross‑layer decode for MatryoshkaRunner.
+        
+        Simplified version that doesn't use gradient detachment/restoration
+        since we're just coalescing pre-computed results from SparseCoder.
+        """
         self.outputs[module_name] = mid_out
 
         candidate_indices = []
@@ -78,8 +78,9 @@ class MatryoshkaRunner:  # noqa: D101
         out, hookpoint = None, None  # type: ignore[misc]
 
         for i, (hookpoint, layer_mid) in enumerate(self.outputs.items()):
-            if detach_grad:
-                layer_mid.detach()
+            # No gradient detachment needed - we're just coalescing results
+            # if detach_grad:
+            #     layer_mid.detach()
 
             divide_by = (
                 max(1, len(self.outputs) - 1)
@@ -93,8 +94,9 @@ class MatryoshkaRunner:  # noqa: D101
             candidate_indices.append(offset_indices)
             candidate_values.append(layer_mid.current_latent_acts)
 
-            if detach_grad and advance:
-                self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
+            # No gradient restoration setup needed
+            # if detach_grad and advance:
+            #     self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
             if layer_mid.will_be_last:
                 to_delete.add(hookpoint)
 
@@ -249,6 +251,10 @@ class MatryoshkaRunner:  # noqa: D101
             matryoshka_output.dead_mask,
             None,  # pre_acts not needed for cross-layer coalescing
         )
+        
+        # No gradient detachment needed - we're just coalescing pre-computed results
+        # if detach_grad:
+        #     largest_mid.detach()
         
         # Only do cross-layer coalescing for the largest slice if needed
         if mid_out.sparse_coder.cfg.do_coalesce_topk:
@@ -467,6 +473,11 @@ class MatryoshkaRunner:  # noqa: D101
         )
 
     def restore(self):
+        # In our new optimized approach, we typically don't need to restore anything
+        # since slice computation happens in SparseCoder and we only create one MidDecoder
+        if not self.to_restore:
+            return
+            
         #print(f"MatryoshkaRunner.restore(): Restoring {len(self.to_restore)} objects")
         for hookpoint, (restorable, was_last) in self.to_restore.items():
             #print(f"  Restoring {hookpoint}: was_last={was_last}")
