@@ -1,9 +1,9 @@
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import einops
 import torch
@@ -40,6 +40,25 @@ class ForwardOutput:
 
     is_last: bool = False
     """Whether this is the last target in a multi-target setup."""
+
+
+@dataclass
+class MatryoshkaSliceResult:
+    """Result for a single Matryoshka slice."""
+    slice_k: int
+    top_acts: Tensor
+    top_indices: Tensor
+    fvu: Tensor
+    auxk_loss: Tensor
+    multi_topk_fvu: Tensor
+
+
+@dataclass
+class MatryoshkaEncoderOutput:
+    """Output from Matryoshka slice encoding."""
+    slice_results: List[MatryoshkaSliceResult]
+    x: Tensor
+    dead_mask: Optional[Tensor] = None
 
 
 class MidDecoder:
@@ -690,6 +709,79 @@ class SparseCoder(nn.Module):
             self.cfg.k,
             self.cfg.activation,
             self.cfg.use_fp8,
+        )
+
+    def encode_matryoshka_slices(
+        self, 
+        x: Tensor, 
+        k_values: List[int], 
+        y: Tensor,
+        dead_mask: Optional[Tensor] = None,
+        loss_mask: Optional[Tensor] = None,
+    ) -> MatryoshkaEncoderOutput:
+        """Encode input and compute slice-specific results without materializing pre_acts.
+        
+        This method computes top-k results for each Matryoshka slice directly,
+        avoiding the need to materialize the full pre_acts tensor.
+        """
+        import torch.nn.functional as F
+        
+        # Normalize input
+        x_norm = self.normalize_input(x)
+        if not self.cfg.transcode:
+            x_norm = x_norm - self.b_dec
+            
+        # Compute pre-activations (linear + ReLU)
+        pre_acts = F.relu(F.linear(x_norm, self.encoder.weight, self.encoder.bias))
+        
+        slice_results = []
+        k = self.cfg.k
+        activation = self.cfg.activation
+        
+        # Process each slice
+        for slice_k in sorted(k_values):
+            # Create mask for this slice
+            subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < slice_k
+            
+            # Apply mask to get subset of pre-activations
+            subset_pre_acts = pre_acts * subset_mask.float()
+            
+            # Apply batchtopk if needed
+            if activation == "batchtopk":
+                from .fused_encoder import batch_topk
+                subset_pre_acts = batch_topk(subset_pre_acts, k)
+            
+            # Apply top-k to the subset
+            top_acts, top_indices = torch.topk(subset_pre_acts, k, dim=1, sorted=False)
+            
+            # Create MidDecoder for this slice
+            slice_mid = MidDecoder(
+                self, x_norm, top_acts, top_indices, dead_mask, pre_acts
+            )
+            
+            # Compute losses for this slice
+            slice_output = slice_mid(
+                y,
+                index=0,
+                add_post_enc=False,
+                loss_mask=loss_mask,
+            )
+            
+            # Store results
+            slice_result = MatryoshkaSliceResult(
+                slice_k=slice_k,
+                top_acts=top_acts,
+                top_indices=top_indices,
+                fvu=slice_output.fvu,
+                auxk_loss=slice_output.auxk_loss,
+                multi_topk_fvu=slice_output.multi_topk_fvu,
+            )
+            slice_results.append(slice_result)
+        
+        return MatryoshkaEncoderOutput(
+            slice_results=slice_results,
+            x=x_norm,
+            dead_mask=dead_mask,
         )
 
     def decode(

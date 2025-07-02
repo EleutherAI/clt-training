@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import List
+from typing import Dict, List, Tuple
 
 import torch
 from torch import Tensor
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor.experimental import local_map
 
-from .sparse_coder import MidDecoder, SparseCoder
+from .sparse_coder import MidDecoder, SparseCoder, MatryoshkaEncoderOutput
 from .utils import decoder_impl
 
 __all__ = ["MatryoshkaRunner"]
@@ -223,172 +223,68 @@ class MatryoshkaRunner:  # noqa: D101
         
         k_values = sorted(self._matryoshka_sizes(mid_out))
 
-        total_fvu = mid_out.latent_acts.new_tensor(0.0)
-        total_aux = mid_out.latent_acts.new_tensor(0.0)
-        total_multi = mid_out.latent_acts.new_tensor(0.0)
-        slice_outputs = []
-
-        # Ensure the original mid_out has proper gradient tracking setup
-        if detach_grad and not hasattr(mid_out, "original_activations"):
-            mid_out.original_activations = mid_out.latent_acts
-            mid_out.latent_acts = mid_out.latent_acts.detach()
-            mid_out.latent_acts.requires_grad = True
-
-        # Compute pre-activations once and then apply batchtopk + top-k to each slice
-        # This avoids creating multiple computation graphs
+        # Use the new optimized method that computes slice results directly
+        matryoshka_output = mid_out.sparse_coder.encode_matryoshka_slices(
+            x=mid_out.x,
+            k_values=k_values,
+            y=y,
+            dead_mask=mid_out.dead_mask,
+            loss_mask=kwargs.get('loss_mask'),
+        )
         
-        # Get the original input and encoder weights
-        x = mid_out.x
-        encoder_weight = mid_out.sparse_coder.encoder.weight
-        encoder_bias = mid_out.sparse_coder.encoder.bias
-        k = mid_out.sparse_coder.cfg.k
-        activation = mid_out.sparse_coder.cfg.activation
-
-        # Compute pre-activations once (linear + ReLU)
-        # Since fused encoder no longer returns pre_acts, we always compute it manually
-        import torch.nn.functional as F
-        pre_acts = F.relu(F.linear(x, encoder_weight, encoder_bias))
-
-        # --------------------------------------------------
-        # Ultra-optimized Matryoshka processing: cross-layer coalescing only for largest slice
-        # --------------------------------------------------
-        # ALTERNATIVE OPTIMIZATION STRATEGIES (if current approach is still too slow):
-        # 
-        # 1. BATCH SLICE PROCESSING:
-        #    - Process all slices in parallel using torch.vmap or manual batching
-        #    - Apply top-k to all slices simultaneously
-        #    - Decode all slices in a single batch operation
-        #
-        # 2. CACHE SHARED COMPUTATIONS:
-        #    - Cache the pre-activations across slices
-        #    - Cache decoder outputs for overlapping indices
-        #    - Reuse gradient computations where possible
-        #
-        # 3. REDUCE SLICE COUNT:
-        #    - Use fewer Matryoshka slices (e.g., 2 instead of 3)
-        #    - Use larger k differences between slices
-        #
-        # 4. OPTIMIZE DECODER CALLS:
-        #    - Use no_grad() for smaller slices if gradients aren't needed
-        #    - Skip auxk_loss and multi_topk_fvu for smaller slices
-        #    - Use faster decoder implementations
-        #
-        # 5. MEMORY OPTIMIZATION:
-        #    - Process slices in-place to reduce memory allocations
-        #    - Use torch.compile() for the slice processing loop
-        #    - Optimize tensor operations to avoid unnecessary copies
-        #
-        # TIMING ANALYSIS: MatryoshkaRunner is actually quite fast (~0.05-0.09s per layer)
-        # The bottleneck is likely in the overall training loop, not the MatryoshkaRunner itself.
-        # EASIEST OPTIMIZATION: Reduce from 3 slices to 2 slices (33% speedup per layer)
-        #
+        # Aggregate losses from all slices
+        total_fvu = sum(slice_result.fvu for slice_result in matryoshka_output.slice_results)
+        total_aux = sum(slice_result.auxk_loss for slice_result in matryoshka_output.slice_results)
+        total_multi = sum(slice_result.multi_topk_fvu for slice_result in matryoshka_output.slice_results)
         
-        # Process slices in reverse order (largest to smallest)
-        largest_slice_output = None
+        # Get the largest slice result for the final output
+        largest_slice = matryoshka_output.slice_results[-1]  # Last slice has largest k
         
-        for i, k_i in enumerate(reversed(k_values)):
-            slice_idx = len(k_values) - 1 - i  # Convert back to original index
-            
-            # Create a mask for the subset of latent space for this slice
-            subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < k_i
-            
-            # Apply the mask to get the subset of pre-activations
-            subset_pre_acts = pre_acts * subset_mask.float()
-
-            # Apply batchtopk + top-k to the subset
-            from .fused_encoder import batch_topk
-            
-            if activation == "batchtopk":
-                # Apply batchtopk to the subset
-                subset_pre_acts = batch_topk(subset_pre_acts, k)
-            
-            # Apply top-k to the subset
-            values, indices = torch.topk(subset_pre_acts, k, dim=1, sorted=False)
-
-            # Create a MidDecoder for this slice
-            slice_mid = mid_out.copy()
-            
-            # Update the slice MidDecoder with slice-specific values
-            # Maintain original shape by creating a mask
-            original_shape = mid_out.latent_acts.shape
-            slice_mask = torch.zeros(original_shape, device=values.device, dtype=values.dtype)
-            
-            # Fill in the slice-specific values in the first k positions
-            slice_mask[:, :values.shape[1]] = values.detach()
-            
-            slice_mid.latent_acts = slice_mask
-            slice_mid.latent_acts.requires_grad = True
-            
-            # Keep original indices shape to avoid dimension mismatches
-            slice_mid.latent_indices = mid_out.latent_indices
-            
-            # Set pre_acts for auxiliary losses (since fused encoder no longer returns it)
-            slice_mid.pre_acts = pre_acts
-            
-            # Ensure proper gradient tracking setup
-            if detach_grad and not hasattr(slice_mid, "original_activations"):
-                slice_mid.original_activations = mid_out.original_activations
-            
-            # Only do full cross-layer coalescing and decoding for the largest slice (i=0)
-            if i == 0:
-                # This is the largest slice - do full cross-layer processing
-                
-                # Store it in outputs for gradient restoration
-                self.outputs[module_name] = slice_mid
-                
-                # Do full cross-layer coalescing and decoding
-                largest_slice_output = self._decode_slice(
-                    slice_mid,
-                    y,
-                    module_name,
-                    detach_grad=detach_grad,
-                    advance=advance,  # Advance for the largest slice
-                    **kwargs,
-                )
-                
-                # Store the largest slice output
-                slice_outputs.insert(0, largest_slice_output)
-                total_fvu += largest_slice_output.fvu
-                total_aux += largest_slice_output.auxk_loss
-                total_multi += largest_slice_output.multi_topk_fvu
-                
-            else:
-                # This is a smaller slice - only compute losses without cross-layer coalescing
-                
-                # Compute losses directly without cross-layer coalescing
-                # This is much faster as it avoids the expensive cross-layer operations
-                out_slice = slice_mid(
-                    y,
-                    index=0,
-                    add_post_enc=False,
-                    **kwargs,
-                )
-                
-                # Store the smaller slice output
-                slice_outputs.insert(0, out_slice)
-                total_fvu += out_slice.fvu
-                total_aux += out_slice.auxk_loss
-                total_multi += out_slice.multi_topk_fvu
-
-        n_slices = len(k_values)
-        avg_fvu = total_fvu / n_slices
-        avg_aux = total_aux / n_slices
-        avg_multi = total_multi / n_slices
-
-        # ------------------------------------------------------------------
-        # Build combined ``ForwardOutput`` using the largest slice's object as a
-        # template, but patch the losses to averaged versions.
-        # ------------------------------------------------------------------
-        # Use the largest slice (last slice) for the final output
-        largest_slice_output = slice_outputs[-1]
+        # Create MidDecoder for the largest slice (for cross-layer coalescing if needed)
+        largest_mid = MidDecoder(
+            mid_out.sparse_coder,
+            matryoshka_output.x,
+            largest_slice.top_acts,
+            largest_slice.top_indices,
+            matryoshka_output.dead_mask,
+            None,  # pre_acts not needed for cross-layer coalescing
+        )
         
-        # Create final output with largest slice values but averaged losses
+        # Only do cross-layer coalescing for the largest slice if needed
+        if mid_out.sparse_coder.cfg.do_coalesce_topk:
+            # Store for gradient restoration
+            self.outputs[module_name] = largest_mid
+            
+            # Do full cross-layer coalescing and decoding
+            final_output = self._decode_slice(
+                largest_mid,
+                y,
+                module_name,
+                detach_grad=detach_grad,
+                advance=advance,
+                **kwargs,
+            )
+        else:
+            # No cross-layer coalescing needed, use the largest slice directly
+            final_output = largest_mid(
+                y,
+                index=0,
+                add_post_enc=False,
+                **kwargs,
+            )
+        
+        # Update the final output with aggregated losses
         final_output = replace(
-            largest_slice_output,
+            final_output,
             fvu=total_fvu,
             auxk_loss=total_aux,
             multi_topk_fvu=total_multi,
         )
+        
+        n_slices = len(k_values)
+        avg_fvu = total_fvu / n_slices
+        avg_aux = total_aux / n_slices
+        avg_multi = total_multi / n_slices
         
         # Only show debug info for the final slice
         print(f"\n{'='*60}")
