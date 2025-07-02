@@ -4,19 +4,21 @@ MODEL_NAME=gpt2
 CHECKPOINT_PATH=$PWD/checkpoints/gpt2-sweep
 NAME=$1
 
-SAVE_DIR=$PWD/results/gpt2-eval/$NAME
-mkdir -p $SAVE_DIR
 
 SCAN=$MODEL_NAME-$NAME
 set -e
 if [ -z "$pn" ]; then
     pn=alice
 fi
-PROMPT_NAME=$pn-$NAME
+PROMPT_NAME=$pn-$MODEL_NAME
 if [ -z "$pt" ]; then
-    pt="<|endoftext|>In another moment, down went Alice after it, never once considering how in the world she was to get out again."
+    pt="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
 fi
 PROMPT_TEXT=$pt
+
+SAVE_DIR=$PWD/results/gpt2-eval/$PROMPT_NAME/$NAME
+mkdir -p $SAVE_DIR
+
 # PROMPT_TEXT="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
 cd ../attribution_graph
 uv run python -m attribute \

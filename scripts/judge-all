@@ -2,6 +2,8 @@
 set -e
 # scripts/judge-gpt bs8-lr3e-4-tied-ef128-k16
 # scripts/judge-gpt bs8-lr2e-4-none-ef128-k16
-scripts/judge-gpt ../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16
+# scripts/judge-gpt ../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16
+scripts/judge-gpt bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16
+scripts/judge-gpt bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16
 # scripts/judge-gpt bs8-lr3e-4-tied-ef512-k16
 # scripts/judge-gpt bs8-lr2e-4-none-ef512-k16
