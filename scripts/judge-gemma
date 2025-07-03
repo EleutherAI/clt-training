@@ -14,14 +14,13 @@ if [ -z "$pn" ]; then
 fi
 PROMPT_NAME=$pn-$MODEL_NAME
 if [ -z "$pt" ]; then
-    pt="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
+    pt="Michael Jordan plays the sport of"
 fi
 PROMPT_TEXT=$pt
 
 SAVE_DIR=$PWD/results/gemma2-2b-eval/$PROMPT_NAME/$NAME
 mkdir -p $SAVE_DIR
 
-# PROMPT_TEXT="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
 cd ../attribution_graph
 uv run python -m attribute \
 --cache_path=nowhere \

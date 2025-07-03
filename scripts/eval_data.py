@@ -1,6 +1,6 @@
 #%%
-# model_type = "gpt2"
-model_type = "gemma-2-2b"
+model_type = "gpt2"
+# model_type = "gemma-2-2b"
 %env CUDA_VISIBLE_DEVICES=2
 from sparsify.__main__ import load_artifacts, RunConfig
 
@@ -15,10 +15,11 @@ cfg = RunConfig(
     ctx_len=16,
     return_overflowed_tokens=False,
     sae=None,
-    loss_fn="kl"
+    loss_fn="kl",
+    max_examples=65536
 )
 
-model, dataset = load_artifacts(cfg, 0)
+model, dataset = load_artifacts(cfg, 0, limit_before_processing=True)
 #%%
 from tqdm import tqdm, trange
 import torch

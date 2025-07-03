@@ -9,8 +9,8 @@ import subprocess
 
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
-# model_type = "gpt2"
-model_type = "gemma2-2b"
+model_type = "gpt2"
+# model_type = "gemma2-2b"
 judge_ctx = "j1"
 
 eval_data = json.load(open(f"data/{model_type}-eval-data/data.json"))
@@ -20,7 +20,9 @@ run_names = {
         "bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16",
         "bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16",
         "bs8-lr3e-4-tied-ef128-k16",
-        "bs8-lr2e-4-none-ef128-k16"
+        "bs8-lr2e-4-none-ef128-k16",
+        "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8",
+        "../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16",
     ],
     "gemma2-2b": [
         "gemma-mntss-no-skip",
@@ -29,7 +31,9 @@ run_names = {
     ]
 }[model_type]
 extra_args = {
-    "gpt2": {},
+    "gpt2": {
+        # "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "",
+    },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
         "gemma-mntss-main": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
@@ -37,11 +41,14 @@ extra_args = {
     }
 }[model_type]
 script_name = {
-    "gpt2": "gpt2",
+    "gpt2": "gpt",
     "gemma2-2b": "gemma",
 }[model_type]
-available_gpus = [2, 3]
-n_can_run_parallel = 1
+available_gpus = [0, 1,2, 3]
+n_can_run_parallel = {
+    "gpt2": 1,
+    "gemma2-2b": 1,
+}[model_type]
 
 n_occupants = {gpu: 0 for gpu in available_gpus}
 start_end_mutex = threading.Lock()
@@ -62,11 +69,13 @@ def judge_run(run_name, prompt, i):
         # print(n_occupants)
 
     try:
+        args = [f"scripts/judge-{script_name}", run_name, *extra_args.get(run_name, "").split()]
+        prompt_text = tokenizer.decode(prompt, skip_special_tokens=True)
         pipes = subprocess.Popen(
-            [f"scripts/judge-{script_name}", run_name, *extra_args.get(run_name, "").split()],
+            args,
             env=os.environ | dict(
                 pn=prompt_name,
-                pt=tokenizer.decode(prompt),
+                pt=prompt_text,
                 CUDA_VISIBLE_DEVICES=str(gpu),
             ),
             stdout=subprocess.PIPE,

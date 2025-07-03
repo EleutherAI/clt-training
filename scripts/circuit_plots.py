@@ -9,22 +9,47 @@ from pathlib import Path
 from collections import defaultdict
 import numpy as np
 import pandas as pd
-eval_path = Path("results/gpt2-eval/")
-model_name = "GPT2"
+import os
+os.chdir(os.path.dirname(os.path.dirname(__file__)))
+# model_type = "gpt2"
+model_type = "gemma2-2b"
+eval_path = Path(f"results/{model_type}-eval/")
+model_name = {
+    "gpt2": "GPT2",
+    "gemma2-2b": "Gemma 2 2B",
+}[model_type]
+model_type_for_path = {
+    "gpt2": "gpt2",
+    "gemma2-2b": "gemma-2-2b",
+}
 judge_ctx = "j1"
 run_names = {
-    "bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16": "Tied CLT, no skip",
-    "bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16": "PLT, no skip",
-    "bs8-lr3e-4-tied-ef128-k16": "Tied CLT, skip",
-    "bs8-lr2e-4-none-ef128-k16": "PLT, skip",
-}
+    "gpt2": {
+        ".._clt-gpt2-finetune_bs8-lr2e-4-none-ef128-k16": "FT PLT, no skip",
+        "bs8-lr2e-4-none-ef128-k16": "PLT, skip",
+        "bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16": "PLT, no skip",
+        "bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16": "Tied CLT, no skip",
+        "bs8-lr3e-4-tied-ef128-k16": "Tied CLT, skip",
+        "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "CLT, no skip",
+    },
+    "gemma2-2b": {
+        "gemma-mntss-no-skip": "PLT, no skip",
+        "gemma-mntss-main": "PLT, skip",
+        "gemmascope-transcoders-sparsify": "PLT, Gemmascope",
+    }
+}[model_type]
 metric = "replacement_score_unpruned"
+# metric = "sweep_pruning_results.200.replacement_score"
 # metric = "completeness_score_unpruned"
 results = defaultdict(dict)
 for run_name, run_name_str in run_names.items():
-    for results_path in eval_path.glob(f"{judge_ctx}-*-gpt2/{run_name}/results.json"):
+    for results_path in eval_path.glob(f"{judge_ctx}-*-{model_type_for_path[model_type]}/{run_name}/results.json"):
         prompt_n = int(results_path.parent.parent.stem.split('-')[1])
-        results[run_name_str][prompt_n] = json.load(open(results_path))[metric]
+        json_data = json.load(open(results_path))
+        for k in metric.split('.'):
+            json_data = json_data[k]
+        metric_value = json_data
+        results[run_name_str][prompt_n] = metric_value
 result_sets = {k: set(v.keys()) for k, v in results.items()}
 result_set = next(iter(result_sets.values()))
 for res_set in result_sets.values():
@@ -57,12 +82,20 @@ run_name_list = list(run_names.values())
 n_runs = len(run_name_list)
 
 plt.figure(figsize=(4 * n_runs, 4 * n_runs))
+
+comparisons = [
+    ("CLT, no skip", "Tied CLT, skip"),
+    ("FT PLT, no skip", "PLT, no skip"),
+]
+
 for i in range(n_runs):
     for j in range(n_runs):
         if i == j:
             continue
         run_i = run_name_list[i]
         run_j = run_name_list[j]
+        if (run_i, run_j) not in comparisons:
+            continue
         # Get results for the intersection set, already aligned in 'results'
         x = results[run_i]
         y = results[run_j]
@@ -77,3 +110,4 @@ for i in range(n_runs):
         plt.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
         plt.tight_layout()
         plt.show()
+#%%
