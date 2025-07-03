@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+set -e
+
+MODEL_NAME=gemma-2-2b
+CHECKPOINT_PATH=EleutherAI/
+NAME=$1
+
+
+SCAN=$MODEL_NAME-$NAME
+set -e
+if [ -z "$pn" ]; then
+    pn=alice
+fi
+PROMPT_NAME=$pn-$MODEL_NAME
+if [ -z "$pt" ]; then
+    pt="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
+fi
+PROMPT_TEXT=$pt
+
+SAVE_DIR=$PWD/results/gemma2-2b-eval/$PROMPT_NAME/$NAME
+mkdir -p $SAVE_DIR
+
+# PROMPT_TEXT="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
+cd ../attribution_graph
+uv run python -m attribute \
+--cache_path=nowhere \
+--name $PROMPT_NAME \
+--scan "$SCAN" \
+"$PROMPT_TEXT" \
+--cache_features=False --save_graph=False \
+--save_dir=$SAVE_DIR \
+--transcoder_path="$CHECKPOINT_PATH/$NAME" --model_name="google/$MODEL_NAME" --remove_prefix 1 \
+${@:2}

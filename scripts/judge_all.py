@@ -6,17 +6,42 @@ from tqdm import tqdm
 import threading
 import os
 import subprocess
-eval_data = json.load(open("data/gpt2-eval-data/data.json"))
-tokenizer = AutoTokenizer.from_pretrained(eval_data["model_name"])
-run_names = [
-    "bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16",
-    "bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16",
-    "bs8-lr3e-4-tied-ef128-k16",
-    "bs8-lr2e-4-none-ef128-k16"
-]
+
+os.chdir(os.path.dirname(os.path.dirname(__file__)))
+
+# model_type = "gpt2"
+model_type = "gemma2-2b"
 judge_ctx = "j1"
-available_gpus = [1, 2, 3]
-n_can_run_parallel = 4
+
+eval_data = json.load(open(f"data/{model_type}-eval-data/data.json"))
+tokenizer = AutoTokenizer.from_pretrained(eval_data["model_name"])
+run_names = {
+    "gpt2": [
+        "bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16",
+        "bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16",
+        "bs8-lr3e-4-tied-ef128-k16",
+        "bs8-lr2e-4-none-ef128-k16"
+    ],
+    "gemma2-2b": [
+        "gemma-mntss-no-skip",
+        "gemma-mntss-main",
+        "gemmascope-transcoders-sparsify",
+    ]
+}[model_type]
+extra_args = {
+    "gpt2": {},
+    "gemma2-2b": {
+        "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
+        "gemma-mntss-main": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
+        "gemmascope-transcoders-sparsify": "--post_ln_hook=True --offload=True",
+    }
+}[model_type]
+script_name = {
+    "gpt2": "gpt2",
+    "gemma2-2b": "gemma",
+}[model_type]
+available_gpus = [2, 3]
+n_can_run_parallel = 1
 
 n_occupants = {gpu: 0 for gpu in available_gpus}
 start_end_mutex = threading.Lock()
@@ -25,7 +50,7 @@ wake_up_signal = threading.Condition(start_end_mutex)
 def judge_run(run_name, prompt, i):
     with start_end_mutex:
         prompt_name = f"{judge_ctx}-{i}"
-        results_path = f"../results/gpt2-eval/{prompt_name}-gpt2/results.json"
+        results_path = f"../results/{model_type}-eval/{prompt_name}-{model_type}/results.json"
         if os.path.exists(results_path):
             return
         while all(n_occupants[gpu] >= n_can_run_parallel for gpu in available_gpus):
@@ -33,23 +58,33 @@ def judge_run(run_name, prompt, i):
         gpu = min(available_gpus, key=lambda gpu: n_occupants[gpu])
         assert n_occupants[gpu] < n_can_run_parallel
         n_occupants[gpu] += 1
+        # print(f"Received GPU {gpu} for {prompt_name} ({run_name})")
+        # print(n_occupants)
 
     try:
-        subprocess.check_call(
-            ["scripts/judge-gpt", run_name],
+        pipes = subprocess.Popen(
+            [f"scripts/judge-{script_name}", run_name, *extra_args.get(run_name, "").split()],
             env=os.environ | dict(
                 pn=prompt_name,
                 pt=tokenizer.decode(prompt),
                 CUDA_VISIBLE_DEVICES=str(gpu),
             ),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=os.path.dirname(os.path.dirname(__file__))
         )
+        stdout, stderr = pipes.communicate()
+        if pipes.returncode != 0:
+            print(f"Error running {run_name} on prompt {i}: {pipes.returncode}")
+            print(stdout.decode("utf-8"))
+            print(stderr.decode("utf-8"))
+            return
     finally:
         with start_end_mutex:
             n_occupants[gpu] -= 1
             wake_up_signal.notify()
+            # print(f"GPU {gpu} is free")
+            # print(n_occupants)
 
 threads = []
 for i, prompt in enumerate(eval_data["prompts"]):

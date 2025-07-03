@@ -143,7 +143,7 @@ class MidDecoder:
             latent_acts = dtensor.DTensor.from_local(
                 latent_acts,
                 self.latent_acts.device_mesh,
-                placements=[dtensor.Shard(0), dtensor.Replicate()],
+                placements=self.latent_acts.placements,
             )
         else:
             latent_acts = latent_acts + post_enc[self.latent_indices]
@@ -191,11 +191,6 @@ class MidDecoder:
             sae_out = torch.zeros_like(self.x)
         else:
             latent_indices = self.latent_indices
-            if isinstance(latent_indices, dtensor.DTensor):
-                latent_indices = latent_indices.redistribute(
-                    latent_indices.device_mesh,
-                    [dtensor.Shard(0), dtensor.Replicate()],
-                )
             sae_out = self.sparse_coder.decode(latent_acts, latent_indices, index)
         W_skip = (
             self.sparse_coder.W_skips[index]
@@ -379,8 +374,11 @@ class SparseCoder(nn.Module):
                     "per-layer",
                 ):
                     self.W_decs = nn.ParameterList()
-                    for _ in range(cfg.n_targets):
-                        self.W_decs.append(create_W_dec())
+                    for i in range(cfg.n_targets):
+                        if i == 0 or not cfg.per_source_tied:
+                            self.W_decs.append(create_W_dec())
+                        else:
+                            self.W_decs.append(self.W_decs[-1])
                     self.W_dec = self.W_decs[0]
                 else:
                     self.W_dec = create_W_dec()

@@ -71,6 +71,9 @@ class SparseCoderConfig(Serializable):
     post_encoder_scale: bool = False
     """Train a scale for post-encoder layers."""
 
+    per_source_tied: bool = False
+    """Tie decoders for each source layer."""
+
     coalesce_topk: Literal["none", "concat", "per-layer", "group"] = "none"
     """How to combine values and indices across layers."""
 

@@ -1,10 +1,15 @@
 #%%
+# model_type = "gpt2"
+model_type = "gemma-2-2b"
 %env CUDA_VISIBLE_DEVICES=2
 from sparsify.__main__ import load_artifacts, RunConfig
 
 
 cfg = RunConfig(
-    model="gpt2",
+    model={
+        "gpt2": "gpt2",
+        "gemma-2-2b": "google/gemma-2-2b",
+    }[model_type],
     dataset="EleutherAI/SmolLM2-135M-10B",
     split="train",
     ctx_len=16,
@@ -30,7 +35,6 @@ below_threshold = token_counts < 1e-4
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained(cfg.model)
 #%%
-import ftfy
 target_size = 256
 min_len = 10
 below_threshold = below_threshold.cuda()
@@ -52,8 +56,6 @@ for _, seq in zip((bar := trange(take_samples)), dataset):
         tokens = input_ids.tolist()[:mask_tok]
         if tokenizer.eos_token_id in tokens:
             continue
-        if tokenizer.encode(tokenizer.decode(tokens)) != tokens:
-            continue
         text = tokenizer.decode(tokens)
         if any(not c.isascii() for c in text):
             continue
@@ -73,7 +75,7 @@ to_save = dict(
     min_len=min_len,
     prompts=results,
 )
-save_path = Path("data/gpt2-eval-data")
+save_path = Path(f"data/{model_type}-eval-data")
 save_path.mkdir(parents=True, exist_ok=True)
 json.dump(to_save, open(save_path / "data.json", "w"))
 #%%

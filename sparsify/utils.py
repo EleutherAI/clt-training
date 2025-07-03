@@ -517,13 +517,24 @@ def parallelize_decoder(decoder):
             assert top_indices.placements == top_acts.placements
             placement = {}
             local_acts = top_acts.to_local()
-            local_acts = AvgGrad.apply(local_acts, mesh.get_group(1))
+            decoder_sharded_across_features = (
+                isinstance(W_dec.placements[1], Shard) and W_dec.placements[1].dim == 0
+            )
+            features_replicated = isinstance(top_indices.placements[1], Replicate)
+            if features_replicated or not decoder_sharded_across_features:
+                if not isinstance(top_acts.placements[1], Replicate):
+                    top_acts = top_acts.redistribute(
+                        mesh, (top_acts.placements[0], Replicate())
+                    )
+                local_acts = top_acts.to_local()
+                local_acts = AvgGrad.apply(local_acts, mesh.get_group(1))
 
             local_indices = top_indices.to_local()
             for i, p in enumerate(W_dec.placements):
                 if isinstance(p, Shard):
                     if p.dim == 1:
                         placement[i] = Shard(1)
+                    # decoder sharded across feature dimension, features not sharded
                     else:
                         features_per_rank = W_dec.to_local().shape[0]
                         rank = mesh.get_local_rank(1)

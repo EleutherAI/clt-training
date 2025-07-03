@@ -29,6 +29,10 @@ else
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
     elif [ "$3" == "tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
+    elif [ "$3" == "source-tied" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False"
+    elif [ "$3" == "source-tied-no-affine" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$3" == "tied-no-affine" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$3" == "cross" ]; then
