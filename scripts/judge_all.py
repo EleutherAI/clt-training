@@ -9,8 +9,8 @@ import subprocess
 
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
-model_type = "llama-1b"
-# model_type = "gpt2"
+# model_type = "llama-1b"
+model_type = "gpt2"
 # model_type = "gemma2-2b"
 judge_ctx = "j1"
 
@@ -23,6 +23,7 @@ run_names = {
         "bs8-lr3e-4-tied-ef128-k16",
         "bs8-lr2e-4-none-ef128-k16",
         "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8",
+        "bs32-lr2e-4-source-tied-ef128-k16-adam8",
         "../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16",
     ],
     "gemma2-2b": [

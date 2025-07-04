@@ -870,6 +870,7 @@ class Trainer:
                         mask.zero_()
 
                 if (step + 1) % self.cfg.save_every == 0:
+                    print(f"Saving checkpoint at step {step + 1}")
                     self.save()
 
                     if self.cfg.save_best:

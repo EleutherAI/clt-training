@@ -369,16 +369,18 @@ class SparseCoder(nn.Module):
                         )
                     return nn.Parameter(result)
 
-                if self.multi_target and self.cfg.coalesce_topk not in (
-                    "concat",
-                    "per-layer",
+                if (
+                    self.multi_target
+                    and self.cfg.coalesce_topk
+                    not in (
+                        "concat",
+                        "per-layer",
+                    )
+                    and not cfg.per_source_tied
                 ):
                     self.W_decs = nn.ParameterList()
                     for i in range(cfg.n_targets):
-                        if i == 0 or not cfg.per_source_tied:
-                            self.W_decs.append(create_W_dec())
-                        else:
-                            self.W_decs.append(self.W_decs[-1])
+                        self.W_decs.append(create_W_dec())
                     self.W_dec = self.W_decs[0]
                 else:
                     self.W_dec = create_W_dec()
@@ -586,31 +588,41 @@ class SparseCoder(nn.Module):
         if hasattr(self, "post_enc") and "post_enc" not in state_dict:
             print("Imputing post_enc")
             state_dict["post_enc"] = self.post_enc.clone()
-        if hasattr(self, "post_encs") and "post_encs" not in state_dict:
+        if hasattr(self, "post_encs") and not any(
+            f"post_encs.{i}" in state_dict for i in range(len(self.post_encs))
+        ):
             print("Imputing post_encs")
             for i, post_enc in enumerate(self.post_encs):
                 state_dict[f"post_encs.{i}"] = post_enc.clone()
         if hasattr(self, "post_enc_scale") and "post_enc_scale" not in state_dict:
             print("Imputing post_enc_scale")
             state_dict["post_enc_scale"] = self.post_enc_scale.clone()
-        if hasattr(self, "post_enc_scales"):
+        if hasattr(self, "post_enc_scales") and not any(
+            f"post_enc_scales.{i}" in state_dict
+            for i in range(len(self.post_enc_scales))
+        ):
             print("Imputing post_enc_scales")
             for i, post_enc_scale in enumerate(self.post_enc_scales):
                 if f"post_enc_scales.{i}" not in state_dict:
                     state_dict[f"post_enc_scales.{i}"] = post_enc_scale.clone()
-        if hasattr(self, "W_decs") and "W_decs" not in state_dict:
+        if hasattr(self, "W_decs") and not any(
+            f"W_decs.{i}" in state_dict for i in range(len(self.W_decs))
+        ):
             print("Imputing W_decs")
             state_dict["W_decs.0"] = state_dict.pop("W_dec")
             for i, W_dec in enumerate(self.W_decs):
                 if i > 0:
                     state_dict[f"W_decs.{i}"] = W_dec.clone()
-        if hasattr(self, "W_skips") and "W_skips" not in state_dict:
-            print("Imputing W_skips")
+        if hasattr(self, "W_skips") and not any(
+            f"W_skips.{i}" in state_dict for i in range(len(self.W_skips))
+        ):
             state_dict["W_skips.0"] = state_dict.pop("W_skip")
             for i, W_skip in enumerate(self.W_skips):
                 if i > 0:
                     state_dict[f"W_skips.{i}"] = W_skip.clone()
-        if hasattr(self, "b_decs") and "b_decs" not in state_dict:
+        if hasattr(self, "b_decs") and not any(
+            f"b_decs.{i}" in state_dict for i in range(len(self.b_decs))
+        ):
             print("Imputing b_decs")
             state_dict["b_decs.0"] = state_dict.pop("b_dec")
             for i, b_dec in enumerate(self.b_decs):

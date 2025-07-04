@@ -61,14 +61,34 @@ class CrossLayerRunner(object):
                 out = layer_mid(
                     y,
                     addition=(0 if hookpoint != module_name else (output / divide_by)),
-                    no_extras=hookpoint != module_name,
-                    denormalize=hookpoint == module_name,
+                    no_extras=(hookpoint != module_name)
+                    or mid_out.sparse_coder.cfg.secondary_target_tied,
+                    denormalize=(hookpoint == module_name)
+                    and not mid_out.sparse_coder.cfg.secondary_target_tied,
                     **kwargs,
                 )
                 if hookpoint != module_name:
                     output += out.sae_out
             else:
                 layer_mid.next()
+
+        if mid_out.sparse_coder.cfg.secondary_target_tied:
+            candidate_indices = torch.cat(candidate_indices, dim=1)
+            candidate_values = torch.cat(candidate_values, dim=1)
+            candidate_indices = candidate_indices % mid_out.sparse_coder.num_latents
+            new_mid_out = mid_out.copy(
+                indices=candidate_indices,
+                activations=candidate_values,
+            )
+            out = new_mid_out(
+                y,
+                index=0,
+                add_post_enc=False,
+                no_extras=False,
+                denormalize=True,
+                addition=out.sae_out,
+                **kwargs,
+            )
 
         if mid_out.sparse_coder.cfg.do_coalesce_topk:
             candidate_indices = torch.cat(candidate_indices, dim=1)

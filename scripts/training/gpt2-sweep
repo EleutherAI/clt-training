@@ -31,6 +31,8 @@ else
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$3" == "source-tied" ]; then
         CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False"
+    elif [ "$3" == "source-target-tied" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --secondary_target_tied=True --topk_coalesced=False"
     elif [ "$3" == "source-tied-no-affine" ]; then
         CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$3" == "tied-no-affine" ]; then
@@ -83,8 +85,8 @@ if ! [ -z "$DO_SAVE" ]; then
 fi
 
 if ! [ -z "$RESUME" ]; then
-    # RESUME="--resume"
-    RESUME="--finetune checkpoints/gpt2-sweep/$NAME$name"
+    RESUME="--resume"
+    # RESUME="--finetune checkpoints/gpt2-sweep/$NAME$name"
     SAVE_ARGS=""
 fi
 
