@@ -1,5 +1,6 @@
 #%%
-model_type = "gpt2"
+model_type = "llama-1b"
+# model_type = "gpt2"
 # model_type = "gemma-2-2b"
 %env CUDA_VISIBLE_DEVICES=2
 from sparsify.__main__ import load_artifacts, RunConfig
@@ -9,6 +10,7 @@ cfg = RunConfig(
     model={
         "gpt2": "gpt2",
         "gemma-2-2b": "google/gemma-2-2b",
+        "llama-1b": "meta-llama/Llama-3.2-1B",
     }[model_type],
     dataset="EleutherAI/SmolLM2-135M-10B",
     split="train",

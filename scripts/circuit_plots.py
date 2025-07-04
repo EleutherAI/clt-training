@@ -3,24 +3,26 @@ import json
 import glob
 from matplotlib import pyplot as plt
 import seaborn as sns
-sns.set_theme()
-#%%
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
 import pandas as pd
 import os
+sns.set_theme()
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 # model_type = "gpt2"
-model_type = "gemma2-2b"
+# model_type = "gemma2-2b"
+model_type = "llama-1b"
 eval_path = Path(f"results/{model_type}-eval/")
 model_name = {
     "gpt2": "GPT2",
     "gemma2-2b": "Gemma 2 2B",
+    "llama-1b": "LLaMA 1B",
 }[model_type]
 model_type_for_path = {
     "gpt2": "gpt2",
     "gemma2-2b": "gemma-2-2b",
+    "llama-1b": "llama-3.2-1b",
 }
 judge_ctx = "j1"
 run_names = {
@@ -36,10 +38,16 @@ run_names = {
         "gemma-mntss-no-skip": "PLT, no skip",
         "gemma-mntss-main": "PLT, skip",
         "gemmascope-transcoders-sparsify": "PLT, Gemmascope",
+    },
+    "llama-1b": {
+        "EleutherAI_llama1b-clt-none-ef64-k16": "PLT, skip",
+        "EleutherAI_llama1b-clt-tied-ef64-k16": "Tied CLT, skip",
+        "EleutherAI_Llama-3.2-1B-mntss-skip-transcoder": "PLT, skip, ReLU",
+        "mntss_skip-transcoder-Llama-3.2-1B-131k-nobos": "PLT, skip, TopK",
     }
 }[model_type]
-metric = "replacement_score_unpruned"
-# metric = "sweep_pruning_results.200.replacement_score"
+# metric = "replacement_score_unpruned"
+metric = "sweep_pruning_results.50.replacement_score"
 # metric = "completeness_score_unpruned"
 results = defaultdict(dict)
 for run_name, run_name_str in run_names.items():

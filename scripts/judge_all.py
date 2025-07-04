@@ -9,7 +9,8 @@ import subprocess
 
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
-model_type = "gpt2"
+model_type = "llama-1b"
+# model_type = "gpt2"
 # model_type = "gemma2-2b"
 judge_ctx = "j1"
 
@@ -28,26 +29,36 @@ run_names = {
         "gemma-mntss-no-skip",
         "gemma-mntss-main",
         "gemmascope-transcoders-sparsify",
+    ],
+    "llama-1b": [
+        "EleutherAI/llama1b-clt-none-ef64-k16",
+        "EleutherAI/llama1b-clt-tied-ef64-k16",
+        "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder",
+        "mntss/skip-transcoder-Llama-3.2-1B-131k-nobos",
     ]
 }[model_type]
 extra_args = {
     "gpt2": {
-        # "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
         "gemma-mntss-main": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
         "gemmascope-transcoders-sparsify": "--post_ln_hook=True --offload=True",
+    },
+    "llama-1b": {
+        "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder": "--pre_ln_hook=True"
     }
 }[model_type]
 script_name = {
     "gpt2": "gpt",
     "gemma2-2b": "gemma",
+    "llama-1b": "llama",
 }[model_type]
-available_gpus = [0, 1,2, 3]
+available_gpus = [0, 1, 2, 3]
 n_can_run_parallel = {
     "gpt2": 1,
     "gemma2-2b": 1,
+    "llama-1b": 1,
 }[model_type]
 
 n_occupants = {gpu: 0 for gpu in available_gpus}

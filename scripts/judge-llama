@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -e
+
+MODEL_NAME=llama-3.2-1b
+NAME=$1
+SAVE_NAME=${NAME//\//_}
+
+
+SCAN=$MODEL_NAME-$SAVE_NAME
+set -e
+if [ -z "$pn" ]; then
+    pn=alice
+fi
+PROMPT_NAME=$pn-$MODEL_NAME
+if [ -z "$pt" ]; then
+    pt="Michael Jordan plays the sport of"
+fi
+PROMPT_TEXT=$pt
+
+SAVE_DIR=$PWD/results/llama-1b-eval/$PROMPT_NAME/$SAVE_NAME
+mkdir -p $SAVE_DIR
+
+cd ../attribution_graph
+uv run python -m attribute \
+--cache_path=nowhere \
+--name $PROMPT_NAME \
+--scan "$SCAN" \
+"$PROMPT_TEXT" \
+--cache_features=False --save_graph=False \
+--save_dir=$SAVE_DIR \
+--transcoder_path="$NAME" --model_name="meta-llama/$MODEL_NAME" --remove_prefix 1 \
+${@:2}

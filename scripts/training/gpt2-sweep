@@ -40,7 +40,7 @@ else
         # CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False"
         CROSSING="--cross_layer=12 --divide_cross_layer=True"
         # CROSSING="--cross_layer=12"
-    elif [ "$3" == "btopk-clt-noskip" ]; then
+    elif [ "$3" == "clt-noskip" ]; then
         CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
     else
         echo "Invalid option: $3"
