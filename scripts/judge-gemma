@@ -18,7 +18,7 @@ if [ -z "$pt" ]; then
 fi
 PROMPT_TEXT=$pt
 
-SAVE_DIR=$PWD/results/gemma2-2b-eval/$PROMPT_NAME/$NAME
+SAVE_DIR=$PWD/results/gemma2-2b-eval/$NAME/$PROMPT_NAME
 mkdir -p $SAVE_DIR
 
 cd ../attribution_graph

@@ -5,7 +5,12 @@ set -e
 MODEL_NAME=llama-3.2-1b
 NAME=$1
 SAVE_NAME=${NAME//\//_}
-
+if [[ "$NAME" == ./* ]]; then
+    echo "NAME is relative path"
+    NAME=${NAME:2}
+    NAME=$PWD/$NAME
+    echo $NAME
+fi
 
 SCAN=$MODEL_NAME-$SAVE_NAME
 set -e
@@ -18,7 +23,7 @@ if [ -z "$pt" ]; then
 fi
 PROMPT_TEXT=$pt
 
-SAVE_DIR=$PWD/results/llama-1b-eval/$PROMPT_NAME/$SAVE_NAME
+SAVE_DIR=$PWD/results/llama-1b-eval/$SAVE_NAME/$PROMPT_NAME
 mkdir -p $SAVE_DIR
 
 cd ../attribution_graph

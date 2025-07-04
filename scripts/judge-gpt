@@ -19,7 +19,7 @@ if [ -z "$pt" ]; then
 fi
 PROMPT_TEXT=$pt
 
-SAVE_DIR=$PWD/results/gpt2-eval/$PROMPT_NAME/$NAME
+SAVE_DIR=$PWD/results/gpt2-eval/$NAME/$PROMPT_NAME
 mkdir -p $SAVE_DIR
 
 # PROMPT_TEXT="In another moment, down went Alice after it, never once considering how in the world she was to get out again."
