@@ -83,6 +83,18 @@ class SparseCoderConfig(Serializable):
     topk_coalesced: bool = False
     """Whether to actually apply topk to the coalesced values."""
 
+    # Matryoshka-specific configuration
+    matryoshka: bool = False
+    """Whether to use Matryoshka-style training with multiple sizes."""
+
+    matryoshka_expansion_factors: list[int] = list_field()
+    """List of expansion factors for different Matryoshka sizes.
+    If empty, uses k_values."""
+
+    matryoshka_k_values: list[int] = list_field()
+    """List of k values for different Matryoshka sizes.
+    If empty, extrapolated from expansion_factors."""
+
     @property
     def do_coalesce_topk(self):
         return self.coalesce_topk != "none"
