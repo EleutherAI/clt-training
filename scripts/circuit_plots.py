@@ -10,8 +10,8 @@ import os
 sns.set_theme()
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 # model_type = "gpt2"
-# model_type = "gemma2-2b"
-model_type = "llama-1b"
+model_type = "gemma2-2b"
+# model_type = "llama-1b"
 eval_path = Path(f"results/{model_type}-eval/")
 model_name = {
     "gpt2": "GPT2",
@@ -46,8 +46,8 @@ run_names = {
         "mntss_skip-transcoder-Llama-3.2-1B-131k-nobos": "PLT, skip, TopK",
     }
 }[model_type]
-# metric = "replacement_score_unpruned"
-metric = "sweep_pruning_results.200.replacement_score"
+metric = "replacement_score_unpruned"
+# metric = "sweep_pruning_results.200.replacement_score"
 # metric = "sweep_pruning_results.50.replacement_score"
 # metric = "completeness_score_unpruned"
 results = defaultdict(dict)
@@ -84,14 +84,12 @@ plt.ylabel(f"{metric}")
 plt.xlabel("Model")
 plt.title(f"Circuit score ({len(result_set)} prompts), {model_name}")
 #%%
-sns.displot(x="result", data=all_results, kind="kde", hue="run_name", bw_adjust=0.7)
-plt.xlabel(f"{metric}")
-plt.title(f"Circuit score ({len(result_set)} prompts), {model_name}")
-#%%
 for_averages = defaultdict(lambda: defaultdict(list))
 for (run_name, prompt_n), json_data in all_json_data.items():
     for k, v in json_data["sweep_pruning_results"].items():
         for_averages[run_name][k].append(v["replacement_score"])
+# for_averages = {k: {k2: v for k2, v in sorted(v.items())} for k, v in for_averages.items()}
+for_averages = {k: {k2: v for k2, v in list(v.items())[2:-1]} for k, v in for_averages.items()}
 averages = {k: {k2: np.mean(v) for k2, v in v.items()} for k, v in for_averages.items()}
 stds = {k: {k2: np.std(v) for k2, v in v.items()} for k, v in for_averages.items()}
 plt.figure(figsize=(10, 5))
@@ -104,6 +102,12 @@ for run_name, averages in averages.items():
 plt.legend()
 plt.xlabel("Average L0")
 plt.ylabel(f"{metric}")
+plt.title(f"Circuit score ({len(result_set)} prompts), {model_name}")
+# %%
+
+#%%
+sns.displot(x="result", data=all_results, kind="kde", hue="run_name", bw_adjust=0.7)
+plt.xlabel(f"{metric}")
 plt.title(f"Circuit score ({len(result_set)} prompts), {model_name}")
 #%%
 # Generate a scatter plot between all pairs of runs

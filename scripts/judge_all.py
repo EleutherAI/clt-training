@@ -9,8 +9,8 @@ import subprocess
 
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
-model_type = "llama-1b"
-# model_type = "gpt2"
+# model_type = "llama-1b"
+model_type = "gpt2"
 # model_type = "gemma2-2b"
 judge_ctx = "j1"
 
@@ -40,6 +40,7 @@ run_names = {
 }[model_type]
 extra_args = {
     "gpt2": {
+        "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "--offload=True",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
@@ -55,9 +56,9 @@ script_name = {
     "gemma2-2b": "gemma",
     "llama-1b": "llama",
 }[model_type]
-available_gpus = [0, 1, 2, 3]
+available_gpus = [0, 1, 2, 3, 4, 5, 6, 7]
 n_can_run_parallel = {
-    "gpt2": 1,
+    "gpt2": 4,
     "gemma2-2b": 1,
     "llama-1b": 1,
 }[model_type]

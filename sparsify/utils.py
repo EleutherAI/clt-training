@@ -458,22 +458,10 @@ def triton_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
     assert not isinstance(W_dec, DTensor)
     assert top_acts.ndim == 2
     assert W_dec.ndim == 2
-    return xformers_embedding_bag(top_indices, W_dec, top_acts)
-    # return TritonDecoder.apply(
-    #     top_indices,
-    #     top_acts,
-    #     W_dec.T,
-    # )
-    # indices = torch.arange(top_indices.numel(), device=top_indices.device)
-    # example_indices, feature_indices = \
-    # indices // top_indices.shape[1], top_indices.flatten()
-    # return COODecoder.apply(
-    #     example_indices,
-    #     feature_indices,
-    #     top_acts.flatten(),
-    #     W_dec.T,
-    #     top_indices.shape[0],
-    # )
+    if USE_XFORMERS:
+        return xformers_embedding_bag(top_indices, W_dec, top_acts)
+    else:
+        return TritonDecoder.apply(top_indices, W_dec, top_acts)
 
 
 class AvgGrad(torch.autograd.Function):
@@ -566,7 +554,7 @@ def parallelize_decoder(decoder):
 
 
 try:
-    # from .kernels import COODecoder, TritonDecoder
+    from .kernels import TritonDecoder
     from .xformers import xformers_embedding_bag
 except ImportError:
     decoder_impl = eager_decode
@@ -578,6 +566,8 @@ else:
     else:
         decoder_impl = triton_decode
 decoder_impl = parallelize_decoder(decoder_impl)
+
+USE_XFORMERS: bool = os.environ.get("SPARSIFY_USE_XFORMERS", "0") == "1"
 
 DISTRIBUTE_MODEL: bool = os.environ.get("SPARSIFY_DISTRIBUTE_MODEL", "0") == "1"
 if DISTRIBUTE_MODEL:

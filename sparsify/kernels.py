@@ -630,15 +630,23 @@ class TritonDecoder(torch.autograd.Function):
 
         assert grad_output.is_contiguous(), "grad_output must be contiguous"
 
-        decoder_grad = triton_sparse_transpose_dense_matmul(
-            sparse_indices, sparse_values, grad_output, N=decoder_weight.shape[1]
-        ).T
+        if ctx.needs_input_grad[2]:
+            decoder_grad = triton_sparse_transpose_dense_matmul(
+                sparse_indices, sparse_values, grad_output, N=decoder_weight.shape[1]
+            ).T
+        else:
+            decoder_grad = None
+
+        if ctx.needs_input_grad[1]:
+            values_grad = triton_dense_dense_sparseout_matmul(
+                grad_output, decoder_weight, sparse_indices
+            )
+        else:
+            values_grad = None
 
         return (
             None,
-            triton_dense_dense_sparseout_matmul(
-                grad_output, decoder_weight, sparse_indices
-            ),
+            values_grad,
             # decoder is contiguous when transposed so this is a matching layout
             decoder_grad,
             None,
