@@ -10,8 +10,8 @@ import subprocess
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
 # model_type = "llama-1b"
-model_type = "gpt2"
-# model_type = "gemma2-2b"
+# model_type = "gpt2"
+model_type = "gemma2-2b"
 judge_ctx = "j1"
 
 eval_data = json.load(open(f"data/{model_type}-eval-data/data.json"))
@@ -24,6 +24,8 @@ run_names = {
         "bs8-lr2e-4-none-ef128-k16",
         "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8",
         "../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16",
+        "bs32-lr2e-4-source-tied-ef128-k16-adam8",
+        "bs32-lr2e-4-source-target-tied-ef128-k16-adam8",
     ],
     "gemma2-2b": [
         "gemma-mntss-no-skip",
@@ -35,7 +37,10 @@ run_names = {
         "EleutherAI/llama1b-clt-tied-ef64-k16",
         "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder",
         "mntss/skip-transcoder-Llama-3.2-1B-131k-nobos",
-        "./checkpoints/llama-sweep/bs32_lr2e-4_none_ef64_k32"
+        "./checkpoints/llama-sweep/bs32_lr2e-4_none_ef64_k32",
+        "./checkpoints/llama-sweep/bs16_lr2e-4_no-skip_ef64_k32",
+        "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp10",
+        "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp20",
     ]
 }[model_type]
 extra_args = {
@@ -48,7 +53,9 @@ extra_args = {
         "gemmascope-transcoders-sparsify": "--post_ln_hook=True --offload=True",
     },
     "llama-1b": {
-        "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder": "--pre_ln_hook=True"
+        "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder": "--pre_ln_hook=True",
+        "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp10": "--pre_ln_hook=True",
+        "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp20": "--pre_ln_hook=True",
     }
 }[model_type]
 script_name = {
@@ -56,9 +63,9 @@ script_name = {
     "gemma2-2b": "gemma",
     "llama-1b": "llama",
 }[model_type]
-available_gpus = [0, 1, 2, 3, 4, 5, 6, 7]
+available_gpus = [0, 1, 2, 3, 4, 5]
 n_can_run_parallel = {
-    "gpt2": 4,
+    "gpt2": 1,
     "gemma2-2b": 1,
     "llama-1b": 1,
 }[model_type]

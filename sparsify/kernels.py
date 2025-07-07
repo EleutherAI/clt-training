@@ -281,10 +281,14 @@ def triton_sparse_dense_matmul_kernel(
     dense is shape (N, B), contiguous along B
     out is shape (A, B)
     """
+    if sparse_indices_ptr.dtype == tl.pointer_type(tl.int64):
+        int_dtype = tl.int64
+    else:
+        int_dtype = tl.int32
 
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).cast(int_dtype)
 
-    offsets_k = tl.arange(0, BLOCK_SIZE_K)
+    offsets_k = tl.arange(0, BLOCK_SIZE_K).cast(int_dtype)
     sparse_indices = tl.load(
         sparse_indices_ptr + pid * K + offsets_k, mask=offsets_k < K
     )  # shape (K,)
@@ -294,21 +298,21 @@ def triton_sparse_dense_matmul_kernel(
 
     accum = tl.zeros((BLOCK_SIZE_B,), dtype=tl.float32)
 
-    offsets_b = tl.arange(0, BLOCK_SIZE_B)
+    offsets_b = tl.arange(0, BLOCK_SIZE_B).cast(int_dtype)
 
     for k in range(K):
         # workaround to do sparse_indices[k]
         i = tl.sum(
             tl.where(
-                tl.arange(0, BLOCK_SIZE_K) == k,
+                offsets_k == k,
                 sparse_indices,
-                tl.zeros((BLOCK_SIZE_K,), dtype=tl.int64),
+                tl.zeros((BLOCK_SIZE_K,), dtype=int_dtype),
             )
         )
         # workaround to do sparse_values[k]
         v = tl.sum(
             tl.where(
-                tl.arange(0, BLOCK_SIZE_K) == k,
+                offsets_k == k,
                 sparse_values,
                 tl.zeros((BLOCK_SIZE_K,), dtype=tl.float32),
             )
@@ -404,14 +408,19 @@ def triton_dense_dense_sparseout_matmul_kernel(
     out values: shape (A, K)
     """
 
+    if dense1_ptr.dtype == tl.pointer_type(tl.int64):
+        int_dtype = tl.int64
+    else:
+        int_dtype = tl.int32
+
     pid = tl.program_id(0)
 
-    offsets_k = tl.arange(0, BLOCK_SIZE_K)
+    offsets_k = tl.arange(0, BLOCK_SIZE_K).cast(int_dtype)
     at_indices = tl.load(
         at_indices_ptr + pid * K + offsets_k, mask=offsets_k < K
     )  # shape (K,)
 
-    offsets_b = tl.arange(0, BLOCK_SIZE_B)
+    offsets_b = tl.arange(0, BLOCK_SIZE_B).cast(int_dtype)
     dense1 = tl.load(
         dense1_ptr + pid * stride_d1a + offsets_b * stride_d1b, mask=offsets_b < B
     )  # shape (B,)
@@ -422,7 +431,7 @@ def triton_dense_dense_sparseout_matmul_kernel(
         # workaround to do at_indices[b]
         i = tl.sum(
             tl.where(
-                tl.arange(0, BLOCK_SIZE_K) == k,
+                offsets_k == k,
                 at_indices,
                 tl.zeros((BLOCK_SIZE_K,), dtype=tl.int64),
             )
@@ -433,7 +442,7 @@ def triton_dense_dense_sparseout_matmul_kernel(
             dense2_ptr + offsets_b * stride_d2b + i * stride_d2n, mask=offsets_b < B
         )  # shape (B,)
         accum += tl.where(
-            tl.arange(0, BLOCK_SIZE_K) == k,
+            offsets_k == k,
             tl.sum(dense1 * dense2col),
             tl.zeros((BLOCK_SIZE_K,), dtype=tl.int64),
         )

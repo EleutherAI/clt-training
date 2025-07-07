@@ -2,18 +2,20 @@
 set -e
 PORT=$RANDOM
 PORT=$((PORT + 1000))
-WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
+OPTIMIZER=adam8 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
 meta-llama/Llama-3.2-1B --ctx_len 128 \
 --transcode=True --skip_connection=True \
---batch_size=4 --expansion_factor=64 --tp=4 \
+--batch_size=4 --expansion_factor=64 --tp=2 \
 --hookpoints layers.0.mlp layers.1.mlp layers.2.mlp layers.3.mlp layers.4.mlp layers.5.mlp layers.6.mlp layers.7.mlp layers.8.mlp layers.9.mlp layers.10.mlp layers.11.mlp \
 layers.12.mlp layers.13.mlp layers.14.mlp layers.15.mlp \
 --hookpoints_in layers.0.post_attention_layernorm layers.1.post_attention_layernorm layers.2.post_attention_layernorm layers.3.post_attention_layernorm layers.4.post_attention_layernorm layers.5.post_attention_layernorm layers.6.post_attention_layernorm layers.7.post_attention_layernorm layers.8.post_attention_layernorm layers.9.post_attention_layernorm layers.10.post_attention_layernorm layers.11.post_attention_layernorm layers.12.post_attention_layernorm layers.13.post_attention_layernorm layers.14.post_attention_layernorm layers.15.post_attention_layernorm \
 --run_name llama-finetune-rmid/$1 ${@:2} \
 --optimizer adam --lr 1e-5 --lr_warmup_steps 50 \
 --filter_bos True \
---finetune ../attribution_graph/results/llama-mntss-relu \
---loss_fn kl \
+--dtype bfloat16 \
+--finetune EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp10 \
+# --finetune EleutherAI/Llama-3.2-1B-mntss-skip-transcoder \
+# --loss_fn kl \
 # --cross_layer=16 \
 # --coalesce_topk=concat --topk_coalesced=False --post_encoder_scale=True \
 # --k=32

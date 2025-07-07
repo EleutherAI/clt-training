@@ -22,7 +22,7 @@ else
     elif [ "$3" == "cross16" ]; then
         CROSSING="--cross_layer=16"
     elif [ "$3" == "no-skip" ]; then
-        SKIP="" AFFINE="" CROSSING=""
+        SKIP="" CROSSING=""
     else
         echo "Invalid option: $3"
         exit 1
@@ -63,4 +63,5 @@ $AFFINE --normalize_io=True \
 --run_name llama-sweep/$NAME \
 $SAVE_ARGS \
 $OPTIM_ARGS \
+--finetune checkpoints/llama-sweep/bs32_lr2e-4_none_ef64_k32
 # --dtype bfloat16

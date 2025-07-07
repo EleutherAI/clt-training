@@ -1,12 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Modifications by Stepan Shabalin and Nora Belrose
+import os
+
 import torch
 import triton
 from torch import Tensor
 from torch.distributed.tensor import DTensor
 from triton import language as tl
-import os
-
 
 TRITON_DEBUG = os.environ.get("TRITON_DEBUG", "0") == "1"
 TRITON_DEBUG_CONSTEXPR = tl.constexpr(TRITON_DEBUG)
@@ -32,7 +32,7 @@ def embedding_bag_k(
     for bag in range(0, bag_size):
         my_index = tl.load(indices_ptr + out_idx * bag_size + bag).to(tl.int64)
         # if TRITON_DEBUG_CONSTEXPR and my_index >= N:
-            # tl.device_print("index", my_index, N)
+        # tl.device_print("index", my_index, N)
         my_scaling = tl.load(per_sample_weights + out_idx * bag_size + bag)
         # assert my_index < N, "Index larger than N"
         # assert my_index >= 0, "Index smaller than 0"
@@ -140,26 +140,29 @@ def aggregate_gradient_for_embedding_k(
     BLOCK_SIZE: tl.constexpr,
 ):
     first_embedding_id = tl.program_id(axis=0).to(tl.int64)
+    pad_arange = tl.arange(0, dim_padded).to(tl.int64)
     for k in range(0, BLOCK_SIZE):
         embedding_id = first_embedding_id + (K // BLOCK_SIZE) * k
         # embedding_id = first_embedding_id * BLOCK_SIZE + k
         embedding_id = tl.load(emb_argsorted_ptr + embedding_id).to(tl.int64)
         weight_grad = tl.zeros([dim_padded], dtype=tl.float32)
-        begin = tl.load(emb_begin_pos_ptr + embedding_id)
-        end = tl.load(emb_begin_pos_ptr + embedding_id + 1)
-        dim_mask = tl.arange(0, dim_padded) < dim
+        begin = tl.load(emb_begin_pos_ptr + embedding_id).to(tl.int64)
+        end = tl.load(emb_begin_pos_ptr + embedding_id + 1).to(tl.int64)
+        dim_mask = pad_arange < dim
         weight = tl.load(
-            weight_ptr + embedding_id * dim + tl.arange(0, dim_padded),
+            weight_ptr + embedding_id * dim + pad_arange,
             mask=dim_mask,
         ).to(tl.float32)
         for idx in range(begin, end):
             output_indice_id = tl.load(reverse_mapping_ptr + idx).to(tl.int64)
-            batch_id = output_indice_id // bag_size
-            output_indice_id % bag_size
+            batch_id = (output_indice_id // bag_size).to(tl.int64)
             per_sample_w = tl.load(per_sample_weights_ptr + output_indice_id)
-            gradient = tl.load(
-                gradient_ptr + batch_id * dim + tl.arange(0, dim_padded), mask=dim_mask
-            ).to(tl.float32)
+            assert batch_id >= 0, "batch_id is less than 0"
+            assert batch_id < B, "batch_id is greater than B"
+            dim_index = batch_id * dim + pad_arange
+            gradient = tl.load(gradient_ptr + dim_index, mask=dim_index < B * dim).to(
+                tl.float32
+            )
             weight_grad = weight_grad + per_sample_w * gradient
             per_sample_weights_grad = gradient * weight
             per_sample_weights_grad = tl.sum(per_sample_weights_grad)
@@ -185,6 +188,8 @@ def embedding_bag_bw_rev_indices(
 
     K, dim = weight.shape
     B, bag_size = indices.shape
+    assert gradient.shape == (B, dim)
+    assert gradient.is_contiguous()
     count_per_emb = torch.zeros((K + 1,), dtype=torch.uint32, device=indices.device)
     count_per_embedding_k[(B,)](count_per_emb, indices, bag_size=bag_size, num_warps=1)
     emb_argsorted = count_per_emb[1:].int().argsort(descending=True)

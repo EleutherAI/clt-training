@@ -366,7 +366,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate" },
-    { name = "bitsandbytes", specifier = ">=0.42.0" },
+    { name = "bitsandbytes", specifier = ">=0.46.0" },
     { name = "datasets" },
     { name = "einops" },
     { name = "ftfy", specifier = ">=6.3.1" },
@@ -378,7 +378,7 @@ requires-dist = [
     { name = "safetensors" },
     { name = "schedulefree" },
     { name = "simple-parsing" },
-    { name = "torch", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu126" },
+    { name = "torch", specifier = "==2.7.1", index = "https://download.pytorch.org/whl/cu126" },
     { name = "torchao", specifier = ">=0.11.0", index = "https://download.pytorch.org/whl/cu126" },
     { name = "transformers" },
     { name = "triton", specifier = ">=2.1.0", index = "https://download.pytorch.org/whl/cu126" },

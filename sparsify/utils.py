@@ -461,7 +461,7 @@ def triton_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
     if USE_XFORMERS:
         return xformers_embedding_bag(top_indices, W_dec, top_acts)
     else:
-        return TritonDecoder.apply(top_indices, W_dec, top_acts)
+        return TritonDecoder.apply(top_indices, top_acts, W_dec.T)
 
 
 class AvgGrad(torch.autograd.Function):
@@ -567,7 +567,7 @@ else:
         decoder_impl = triton_decode
 decoder_impl = parallelize_decoder(decoder_impl)
 
-USE_XFORMERS: bool = os.environ.get("SPARSIFY_USE_XFORMERS", "0") == "1"
+USE_XFORMERS: bool = os.environ.get("SPARSIFY_USE_XFORMERS", "1") == "1"
 
 DISTRIBUTE_MODEL: bool = os.environ.get("SPARSIFY_DISTRIBUTE_MODEL", "0") == "1"
 if DISTRIBUTE_MODEL:

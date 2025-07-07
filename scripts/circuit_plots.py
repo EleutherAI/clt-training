@@ -10,8 +10,8 @@ import os
 sns.set_theme()
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 # model_type = "gpt2"
-model_type = "gemma2-2b"
-# model_type = "llama-1b"
+# model_type = "gemma2-2b"
+model_type = "llama-1b"
 eval_path = Path(f"results/{model_type}-eval/")
 model_name = {
     "gpt2": "GPT2",
@@ -32,6 +32,8 @@ run_names = {
         "bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16": "Tied CLT, no skip",
         "bs8-lr3e-4-tied-ef128-k16": "Tied CLT, skip",
         "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "CLT, no skip",
+        "bs32-lr2e-4-source-tied-ef128-k16-adam8": "Source-Tied CLST",
+        "bs32-lr2e-4-source-target-tied-ef128-k16-adam8": "ST-Tied CLST",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "PLT, no skip",
@@ -42,13 +44,17 @@ run_names = {
         "EleutherAI_llama1b-clt-none-ef64-k16": "PLT, skip",
         "EleutherAI_llama1b-clt-tied-ef64-k16": "Tied CLT, skip",
         "._checkpoints_llama-sweep_bs32_lr2e-4_none_ef64_k32": "PLT, skip, k=32",
+        "._checkpoints_llama-sweep_bs16_lr2e-4_no-skip_ef64_k32": "PLT, no skip, k=32",
         "EleutherAI_Llama-3.2-1B-mntss-skip-transcoder": "PLT, skip, ReLU",
         "mntss_skip-transcoder-Llama-3.2-1B-131k-nobos": "PLT, skip, TopK",
+        "EleutherAI_Llama-3.2-1B-mntss-transcoder-no-skip-sp10": "PLT, no skip, sp10",
+        "EleutherAI_Llama-3.2-1B-mntss-transcoder-no-skip-sp20": "PLT, no skip, sp20",
     }
 }[model_type]
 metric = "replacement_score_unpruned"
 # metric = "sweep_pruning_results.200.replacement_score"
-# metric = "sweep_pruning_results.50.replacement_score"
+# metric = "errors.8"
+# metric = "sweep_pruning_results.100.completeness_score"
 # metric = "completeness_score_unpruned"
 results = defaultdict(dict)
 all_json_data = {}
@@ -58,7 +64,10 @@ for run_name, run_name_str in run_names.items():
         json_data = json.load(open(results_path))
         all_json_data[(run_name, prompt_n)] = json_data
         for k in metric.split('.'):
-            json_data = json_data[k]
+            if isinstance(json_data, dict):
+                json_data = json_data[k]
+            elif isinstance(json_data, list):
+                json_data = json_data[int(k)]
         metric_value = json_data
         results[run_name_str][prompt_n] = metric_value
 result_sets = {k: set(v.keys()) for k, v in results.items()}
@@ -68,7 +77,7 @@ for res_set in result_sets.values():
 results = {k: [v[k2] for k2 in result_set] for k, v in results.items()}
 
 result_mean_std = {k: (np.mean(v), np.std(v)) for k, v in results.items()}
-plt.figure(figsize=(10, 5))
+plt.figure(figsize=(15, 5))
 all_results = []
 for run_name_str, results_list in results.items():
     all_results.extend([
