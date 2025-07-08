@@ -460,6 +460,7 @@ class MatryoshkaMidDecoder(MidDecoder):
             sae_out = self.sparse_coder.denormalize_output(sae_out)
 
         if no_extras:
+            print(f"MATRYOSHKA: Skipping detailed loss computation (no_extras=True)")
             return ForwardOutput(
                 sae_out,
                 self.latent_acts,
@@ -470,6 +471,7 @@ class MatryoshkaMidDecoder(MidDecoder):
                 is_last,
             )
         else:
+            print(f"MATRYOSHKA: Computing detailed loss computation (no_extras=False)")
             # MATRYOSHKA LOSS COMPUTATION - DIFFERENT FROM MidDecoder
             # Compute aggregated losses across all slices
             total_fvu = 0.0
@@ -1070,7 +1072,7 @@ class SparseCoder(nn.Module):
             if self.cfg.matryoshka:
                 # Use MatryoshkaMidDecoder with expansion factors
                 expansion_factors = self.cfg.matryoshka_expansion_factors or [0.25, 0.5, 1.0]
-                print(f"USING MATRYOSHKA MIDDECODER with expansion factors: {expansion_factors}")
+                #print(f"USING MATRYOSHKA MIDDECODER with expansion factors: {expansion_factors}")
                 mid_decoder = MatryoshkaMidDecoder(
                     self, x, top_acts, top_indices, pre_acts, dead_mask,
                     expansion_factors=expansion_factors
