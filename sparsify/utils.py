@@ -458,22 +458,10 @@ def triton_decode(top_indices: Tensor, top_acts: Tensor, W_dec: Tensor):
     assert not isinstance(W_dec, DTensor)
     assert top_acts.ndim == 2
     assert W_dec.ndim == 2
-    return xformers_embedding_bag(top_indices, W_dec, top_acts)
-    # return TritonDecoder.apply(
-    #     top_indices,
-    #     top_acts,
-    #     W_dec.T,
-    # )
-    # indices = torch.arange(top_indices.numel(), device=top_indices.device)
-    # example_indices, feature_indices = \
-    # indices // top_indices.shape[1], top_indices.flatten()
-    # return COODecoder.apply(
-    #     example_indices,
-    #     feature_indices,
-    #     top_acts.flatten(),
-    #     W_dec.T,
-    #     top_indices.shape[0],
-    # )
+    if USE_XFORMERS:
+        return xformers_embedding_bag(top_indices, W_dec, top_acts)
+    else:
+        return TritonDecoder.apply(top_indices, top_acts, W_dec.T)
 
 
 class AvgGrad(torch.autograd.Function):
@@ -517,13 +505,24 @@ def parallelize_decoder(decoder):
             assert top_indices.placements == top_acts.placements
             placement = {}
             local_acts = top_acts.to_local()
-            local_acts = AvgGrad.apply(local_acts, mesh.get_group(1))
+            decoder_sharded_across_features = (
+                isinstance(W_dec.placements[1], Shard) and W_dec.placements[1].dim == 0
+            )
+            features_replicated = isinstance(top_indices.placements[1], Replicate)
+            if features_replicated or not decoder_sharded_across_features:
+                if not isinstance(top_acts.placements[1], Replicate):
+                    top_acts = top_acts.redistribute(
+                        mesh, (top_acts.placements[0], Replicate())
+                    )
+                local_acts = top_acts.to_local()
+                local_acts = AvgGrad.apply(local_acts, mesh.get_group(1))
 
             local_indices = top_indices.to_local()
             for i, p in enumerate(W_dec.placements):
                 if isinstance(p, Shard):
                     if p.dim == 1:
                         placement[i] = Shard(1)
+                    # decoder sharded across feature dimension, features not sharded
                     else:
                         features_per_rank = W_dec.to_local().shape[0]
                         rank = mesh.get_local_rank(1)
@@ -555,7 +554,7 @@ def parallelize_decoder(decoder):
 
 
 try:
-    # from .kernels import COODecoder, TritonDecoder
+    from .kernels import TritonDecoder
     from .xformers import xformers_embedding_bag
 except ImportError:
     decoder_impl = eager_decode
@@ -567,6 +566,8 @@ else:
     else:
         decoder_impl = triton_decode
 decoder_impl = parallelize_decoder(decoder_impl)
+
+USE_XFORMERS: bool = os.environ.get("SPARSIFY_USE_XFORMERS", "1") == "1"
 
 DISTRIBUTE_MODEL: bool = os.environ.get("SPARSIFY_DISTRIBUTE_MODEL", "0") == "1"
 if DISTRIBUTE_MODEL:

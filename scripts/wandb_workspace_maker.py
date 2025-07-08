@@ -2,8 +2,9 @@
 import json
 import os
 from collections import defaultdict
-
 import wandb
+
+os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
 api = wandb.Api()
 run_list = list(
@@ -25,6 +26,8 @@ run_list = list(
         "7qzntyj7",
         "b2ieqm7o",
         "rwlgvm7x",
+        "gja6qin3",
+        "y39ubwbl"
     }
 )
 run_lists = defaultdict(list)

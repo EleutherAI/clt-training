@@ -77,7 +77,7 @@ class RunConfig(TrainConfig):
 
 
 def load_artifacts(
-    args: RunConfig, rank: int
+    args: RunConfig, rank: int, limit_before_processing: bool = False
 ) -> tuple[PreTrainedModel, Dataset | MemmapDataset]:
     if args.load_in_8bit:
         dtype = torch.float16
@@ -124,6 +124,8 @@ def load_artifacts(
                 dataset = Dataset.load_from_disk(args.dataset, keep_in_memory=False)
             else:
                 raise e
+        if limit_before_processing:
+            dataset = dataset.select(range(args.max_examples))
 
         assert isinstance(dataset, Dataset)
         if "input_ids" not in dataset.column_names:

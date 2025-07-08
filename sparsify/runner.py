@@ -64,8 +64,9 @@ class CrossLayerRunner(object):
             
             layer_mids.append(layer_mid)
             hookpoints.append(hookpoint)
-            offset_indices = layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents
-            candidate_indices.append(offset_indices)
+            candidate_indices.append(
+                layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents
+            )
             candidate_values.append(layer_mid.current_latent_acts)
             
 
@@ -77,12 +78,13 @@ class CrossLayerRunner(object):
            
                 
             if not mid_out.sparse_coder.cfg.do_coalesce_topk:
-                
                 out = layer_mid(
                     y,
                     addition=(0 if hookpoint != module_name else (output / divide_by)),
-                    no_extras=hookpoint != module_name,
-                    denormalize=hookpoint == module_name,
+                    no_extras=(hookpoint != module_name)
+                    or mid_out.sparse_coder.cfg.secondary_target_tied,
+                    denormalize=(hookpoint == module_name)
+                    and not mid_out.sparse_coder.cfg.secondary_target_tied,
                     **kwargs,
                 )
                 if hookpoint != module_name:
@@ -91,6 +93,7 @@ class CrossLayerRunner(object):
              
             else:
                 layer_mid.next()
+
         if mid_out.sparse_coder.cfg.do_coalesce_topk:
          
             

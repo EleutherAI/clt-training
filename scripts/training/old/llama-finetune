@@ -19,4 +19,3 @@ layers.12.mlp layers.13.mlp layers.14.mlp layers.15.mlp \
 # --finetune checkpoints/llama-finetune/test-0 \
 # --k=12
 # --loss_fn kl --filter_bos True
-

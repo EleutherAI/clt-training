@@ -15,6 +15,8 @@ else
         CROSSING=""
     elif [ "$3" == "btopk" ]; then
         CROSSING="--activation=batchtopk"
+    elif [ "$3" == "btopk-noskip" ]; then
+        CROSSING="--activation=batchtopk --train_post_encoder=False" SCALING="" SKIP=""
     elif [ "$3" == "btopk-tied" ]; then
         CROSSING="--activation=batchtopk --cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$3" == "nonskip" ]; then
@@ -24,9 +26,19 @@ else
     elif [ "$3" == "nonskip-tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False" SKIP=""
     elif [ "$3" == "nonskip-tied-no-affine" ]; then
-        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
+        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$3" == "tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
+    elif [ "$3" == "source-tied" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False"
+    elif [ "$3" == "source-tied-no-affine" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
+    elif [ "$3" == "source-tied-no-scale" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False" SCALING="" SKIP=""
+    elif [ "$3" == "source-target-tied" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --secondary_target_tied=True --topk_coalesced=False"
+    elif [ "$3" == "source-tied-no-affine" ]; then
+        CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$3" == "tied-no-affine" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$3" == "cross" ]; then
@@ -34,6 +46,8 @@ else
         # CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False"
         CROSSING="--cross_layer=12 --divide_cross_layer=True"
         # CROSSING="--cross_layer=12"
+    elif [ "$3" == "clt-noskip" ]; then
+        CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
     else
         echo "Invalid option: $3"
         exit 1
@@ -75,8 +89,8 @@ if ! [ -z "$DO_SAVE" ]; then
 fi
 
 if ! [ -z "$RESUME" ]; then
-    # RESUME="--resume"
-    RESUME="--finetune checkpoints/gpt2-sweep/$NAME$name"
+    RESUME="--resume"
+    # RESUME="--finetune checkpoints/gpt2-sweep/$NAME$name"
     SAVE_ARGS=""
 fi
 

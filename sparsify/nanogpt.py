@@ -313,9 +313,10 @@ def linear(
                 in_placements=(_x.placements, weight.placements),
                 out_placements=(_x.placements[0], weight.placements[0]),
             )
-        out: Tensor = mm(_x, weight, x_s=1.0, w_s=1.0, grad_s=1.0)[0]
+        out = mm(_x, weight, x_s=1.0, w_s=1.0, grad_s=1.0)[0]
         if bias is not None:
             out += bias
-        return out.reshape(*x.shape[:-1], -1)
+        out = out.reshape(*x.shape[:-1], -1)
     else:
-        return F.linear(x, weight, bias)
+        out = F.linear(x, weight, bias)
+    return out

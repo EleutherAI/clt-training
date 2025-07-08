@@ -1,8 +1,14 @@
+import os
 from typing import Literal, NamedTuple
 
 import torch
 import torch.distributed.tensor as dtensor
 import torch.nn.functional as F
+
+try:
+    import rtopk
+except ImportError:
+    rtopk = None
 
 from .kernels import (
     COODecoder,
@@ -11,6 +17,47 @@ from .kernels import (
 )
 from .nanogpt import linear
 from .utils import decoder_impl
+
+NO_COMPILE = os.environ.get("SPARSIFY_NO_COMPILE", "0") == "1"
+NO_RTOPK = os.environ.get("SPARSIFY_NO_RTOPK", "1") == "1"
+
+MAX_SIZE = 1024
+
+
+@torch.compile
+def rtopk_topk(data, k: int, max_iter=10, k_div: int = 1):
+    if rtopk is None or NO_RTOPK:
+        return torch.topk(data, k, dim=1, sorted=False)
+    else:
+        if data.shape[-1] < MAX_SIZE:
+            return rtopk.ops.rtopk(data, k, max_iter=max_iter)
+        if data.shape[-1] % MAX_SIZE != 0:
+            data = torch.nn.functional.pad(data, (0, data.shape[-1] % MAX_SIZE))
+        data = data.unflatten(-1, (-1, MAX_SIZE))
+        if data.shape[-1] <= k:
+            indices = torch.arange(
+                data.shape[-1], device=data.device, dtype=torch.int32
+            )
+            indices = indices.unsqueeze(0).expand(data.shape[0], -1)
+            values = data
+        else:
+            values, indices = rtopk.ops.rtopk(data, k=k // k_div, max_iter=max_iter)
+
+        values_l2, indices_l2 = rtopk_topk(
+            values.flatten(-2), k=k, max_iter=max_iter, k_div=k_div
+        )
+        indices = (
+            (
+                indices
+                + torch.arange(
+                    data.shape[-2], device=indices.device, dtype=torch.int32
+                )[:, None]
+                * data.shape[-1]
+            )
+            .flatten(-2)
+            .gather(-1, indices_l2.long())
+        )
+        return values_l2, indices
 
 
 class EncoderOutput(NamedTuple):
@@ -25,7 +72,7 @@ class EncoderOutput(NamedTuple):
 
 
 class FusedEncoder(torch.autograd.Function):
-    @torch.compile
+    @torch.compile(disable=NO_COMPILE)
     @staticmethod
     def forward(
         ctx,
@@ -45,8 +92,9 @@ class FusedEncoder(torch.autograd.Function):
         preacts = linear(input, weight, bias, use_fp8)
         preacts.relu_()
 
+        original_indices = None
         if activation == "batchtopk":
-            preacts = batch_topk(preacts, k)
+            preacts, original_indices = batch_topk(preacts, k)
             k *= 4
             activation = "topk"
 
@@ -58,7 +106,7 @@ class FusedEncoder(torch.autograd.Function):
             ):
                 mesh = preacts.device_mesh
                 local_acts = preacts.to_local()
-                local_values, local_indices = local_acts.topk(k, dim=1, sorted=False)
+                local_values, local_indices = rtopk_topk(local_acts, k=k)
                 values = dtensor.DTensor.from_local(
                     local_values,
                     mesh,
@@ -72,7 +120,11 @@ class FusedEncoder(torch.autograd.Function):
             elif isinstance(preacts, dtensor.DTensor):
                 mesh = preacts.device_mesh
                 local_acts = preacts.to_local()
-                local_values, local_indices = local_acts.topk(k, dim=1, sorted=False)
+                if original_indices is not None:
+                    local_indices = original_indices
+                    local_values = torch.gather(local_acts, 1, original_indices)
+                else:
+                    local_values, local_indices = rtopk_topk(local_acts, k=k)
                 local_indices += mesh.get_local_rank(1) * local_acts.shape[1]
                 values = dtensor.DTensor.from_local(
                     local_values,
@@ -85,8 +137,8 @@ class FusedEncoder(torch.autograd.Function):
                     (dtensor.Shard(0), dtensor.Shard(1)),
                 ).redistribute(mesh, (dtensor.Shard(0), dtensor.Replicate()))
                 local_values, local_indices = values.to_local(), indices.to_local()
-                local_values, local_indices_ = local_values.topk(k, dim=1, sorted=False)
-                local_indices = torch.gather(local_indices, 1, local_indices_)
+                local_values, local_indices_ = rtopk_topk(local_values, k=k)
+                local_indices = torch.gather(local_indices, 1, local_indices_.long())
                 values = dtensor.DTensor.from_local(
                     local_values,
                     mesh,
@@ -98,7 +150,7 @@ class FusedEncoder(torch.autograd.Function):
                     (dtensor.Shard(0), dtensor.Replicate()),
                 )
             else:
-                values, indices = torch.topk(preacts, k, dim=-1, sorted=False)
+                values, indices = rtopk_topk(preacts, k=k)
         elif activation == "groupmax":
             if isinstance(preacts, dtensor.DTensor):
                 mesh = preacts.device_mesh
@@ -127,12 +179,12 @@ class FusedEncoder(torch.autograd.Function):
                     mesh,
                     (dtensor.Shard(0), dtensor.Shard(1)),
                 )
-                values = values.redistribute(
-                    mesh, (dtensor.Shard(0), dtensor.Replicate())
-                )
-                indices = indices.redistribute(
-                    mesh, (dtensor.Shard(0), dtensor.Replicate())
-                )
+                # values = values.redistribute(
+                #     mesh, (dtensor.Shard(0), dtensor.Replicate())
+                # )
+                # indices = indices.redistribute(
+                #     mesh, (dtensor.Shard(0), dtensor.Replicate())
+                # )
             else:
                 num_latents = preacts.shape[1]
                 values, indices = preacts.unflatten(-1, (k, -1)).max(dim=-1)
@@ -270,8 +322,11 @@ def batch_topk(preacts, k, return_indices=False):
     if isinstance(preacts, dtensor.DTensor):
         mesh = preacts.device_mesh
         local_preacts = preacts.to_local()
+        expected_local_k = k * local_preacts.shape[0]
+        local_values_less, original_indices = rtopk_topk(local_preacts, k=k * 4)
+        original_indices = original_indices.long()
         local_values = torch.topk(
-            local_preacts.flatten(), expected_k, sorted=False
+            local_values_less.flatten(), expected_local_k, sorted=False
         ).values
         all_values = dtensor.DTensor.from_local(
             local_values,
@@ -283,20 +338,22 @@ def batch_topk(preacts, k, return_indices=False):
         )
         combined_values = all_values.to_local()
         values, indices = torch.topk(combined_values, expected_k, sorted=False)
+        values, indices = values[0], indices[0]
         if return_indices:
             return values, indices
         else:
             threshold = values.min()
             local_preacts[local_preacts < threshold] = 0
-            return local_preacts
+            return preacts, original_indices
     else:
-        values, indices = torch.topk(preacts.flatten(), expected_k, sorted=False)
+        values_less, original_indices = rtopk_topk(preacts, k=k * 4)
+        values, indices = torch.topk(values_less.flatten(), expected_k, sorted=False)
         if return_indices:
             return values, indices
         else:
             threshold = values.min()
             preacts[preacts < threshold] = 0
-            return preacts
+            return preacts, original_indices
 
 
 class FusedEncoderCOO(torch.autograd.Function):

@@ -70,16 +70,14 @@ if rank == 0:
 
 with (nullcontext() if rank == 0 else redirect_stdout(None)):
     print("Creating sparse coder and data")
-    with torch.no_grad():
-        data = torch.randn(B, D, device="cuda", dtype=dtype)
-        data = DTensor.from_local(data, device_mesh=mesh, placements=(Shard(0), Replicate()))
-        out_data = data.clone().redistribute(mesh, (Shard(0), Shard(1)))
     sparse_coder = SparseCoder(
         D,
         cfg=SparseCoderConfig(
             dtype="bfloat16",
-            # activation="topk",
-            activation="groupmax",
+            # activation="batchtopk",
+            activation="topk",
+            # activation="groupmax",
+            tp_output=True,
             num_latents=E,
             k=K,
             transcode=True,
@@ -88,6 +86,12 @@ with (nullcontext() if rank == 0 else redirect_stdout(None)):
         device="cuda",
         mesh=mesh,
     )
+    with torch.no_grad():
+        data = torch.randn(B, D, device="cuda", dtype=dtype)
+        data = DTensor.from_local(data, device_mesh=mesh, placements=(Shard(0), Replicate()))
+        out_data = data.clone()
+        if sparse_coder.cfg.tp_output:
+            out_data = out_data.redistribute(mesh, (Shard(0), Shard(1)))
     torch.distributed.barrier()
     print("Sparse coder created")
     @torch.no_grad
