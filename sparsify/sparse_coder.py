@@ -79,9 +79,16 @@ class MidDecoder:
         if dead_mask is None:
             dead_mask = self.dead_mask
         
-        new_mid = MidDecoder(
-            self.sparse_coder, x, activations, indices, pre_acts, dead_mask
-        )
+        # Check if this is a MatryoshkaMidDecoder and create the appropriate copy
+        if hasattr(self, 'expansion_factors'):
+            new_mid = MatryoshkaMidDecoder(
+                self.sparse_coder, x, activations, indices, pre_acts, dead_mask,
+                expansion_factors=self.expansion_factors
+            )
+        else:
+            new_mid = MidDecoder(
+                self.sparse_coder, x, activations, indices, pre_acts, dead_mask
+            )
         
         # Copy gradient tracking state if it exists
         if hasattr(self, "original_activations"):
