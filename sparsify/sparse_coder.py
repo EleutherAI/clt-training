@@ -137,7 +137,7 @@ class MidDecoder:
             latent_acts = latent_acts.to_local()
             latent_indices = self.latent_indices.to_local()
             post_enc = post_enc.to_local()
-            latent_acts = latent_acts + post_enc[latent_indices]
+            latent_acts = latent_acts + post_enc[latent_indices] * (latent_acts > 0)
             if post_enc_scale is not None:
                 latent_acts = latent_acts * post_enc_scale[latent_indices]
             latent_acts = dtensor.DTensor.from_local(
@@ -146,7 +146,9 @@ class MidDecoder:
                 placements=self.latent_acts.placements,
             )
         else:
-            latent_acts = latent_acts + post_enc[self.latent_indices]
+            latent_acts = latent_acts + post_enc[self.latent_indices] * (
+                latent_acts > 0
+            )
             if post_enc_scale is not None:
                 latent_acts = latent_acts * post_enc_scale[self.latent_indices]
         return latent_acts
