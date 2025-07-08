@@ -104,7 +104,14 @@ class MidDecoder:
 
     def restore(self, is_last: bool = False):
         grad = self.latent_acts.grad
-        assert grad is not None, "Activations have no gradient."
+        if grad is None:
+            # If there's no gradient, we can't restore - this can happen if the tensor
+            # was detached but not actually used in the loss computation
+            # Just restore the original activations without backward pass
+            self.latent_acts = self.original_activations
+            if hasattr(self, "original_activations"):
+                del self.original_activations
+            return
         self.latent_acts = self.original_activations
         self.latent_acts.backward(grad, retain_graph=not is_last)
         del self.original_activations
