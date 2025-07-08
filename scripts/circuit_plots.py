@@ -10,8 +10,8 @@ import os
 sns.set_theme()
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 # model_type = "gpt2"
-# model_type = "gemma2-2b"
-model_type = "llama-1b"
+model_type = "gemma2-2b"
+# model_type = "llama-1b"
 eval_path = Path(f"results/{model_type}-eval/")
 model_name = {
     "gpt2": "GPT2",
@@ -51,8 +51,8 @@ run_names = {
         "EleutherAI_Llama-3.2-1B-mntss-transcoder-no-skip-sp20": "PLT, no skip, sp20",
     }
 }[model_type]
-metric = "replacement_score_unpruned"
-# metric = "sweep_pruning_results.200.replacement_score"
+# metric = "replacement_score_unpruned"
+metric = "sweep_pruning_results.200.replacement_score"
 # metric = "errors.8"
 # metric = "sweep_pruning_results.100.completeness_score"
 # metric = "completeness_score_unpruned"
@@ -98,7 +98,9 @@ for (run_name, prompt_n), json_data in all_json_data.items():
     for k, v in json_data["sweep_pruning_results"].items():
         for_averages[run_name][k].append(v["replacement_score"])
 # for_averages = {k: {k2: v for k2, v in sorted(v.items())} for k, v in for_averages.items()}
-for_averages = {k: {k2: v for k2, v in list(v.items())[2:-1]} for k, v in for_averages.items()}
+start_l0 = 2
+end_l0 = 10
+for_averages = {k: {k2: v for k2, v in list(v.items())[start_l0:end_l0]} for k, v in for_averages.items()}
 averages = {k: {k2: np.mean(v) for k2, v in v.items()} for k, v in for_averages.items()}
 stds = {k: {k2: np.std(v) for k2, v in v.items()} for k, v in for_averages.items()}
 plt.figure(figsize=(10, 5))

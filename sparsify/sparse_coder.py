@@ -613,8 +613,10 @@ class SparseCoder(nn.Module):
             for i, W_dec in enumerate(self.W_decs):
                 if i > 0:
                     state_dict[f"W_decs.{i}"] = W_dec.clone()
-        if hasattr(self, "W_skips") and not any(
-            f"W_skips.{i}" in state_dict for i in range(len(self.W_skips))
+        if (
+            self.cfg.skip_connection
+            and hasattr(self, "W_skips")
+            and not any(f"W_skips.{i}" in state_dict for i in range(len(self.W_skips)))
         ):
             state_dict["W_skips.0"] = state_dict.pop("W_skip")
             for i, W_skip in enumerate(self.W_skips):

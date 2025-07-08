@@ -19,7 +19,7 @@ from .nanogpt import linear
 from .utils import decoder_impl
 
 NO_COMPILE = os.environ.get("SPARSIFY_NO_COMPILE", "0") == "1"
-NO_RTOPK = os.environ.get("SPARSIFY_NO_RTOPK", "0") == "1"
+NO_RTOPK = os.environ.get("SPARSIFY_NO_RTOPK", "1") == "1"
 
 MAX_SIZE = 1024
 
