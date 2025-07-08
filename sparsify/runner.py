@@ -135,11 +135,17 @@ class CrossLayerRunner(object):
   
                 best_indices = best_indices % mid_out.sparse_coder.num_latents
       
-                
+                print(f"COALESCE CONCAT: Creating new_mid_out copy")
+                print(f"COALESCE CONCAT: mid_out type: {type(mid_out)}")
+                print(f"COALESCE CONCAT: mid_out has expansion_factors: {hasattr(mid_out, 'expansion_factors')}")
+                if hasattr(mid_out, 'expansion_factors'):
+                    print(f"COALESCE CONCAT: expansion_factors: {mid_out.expansion_factors}")
                 new_mid_out = mid_out.copy(
                     indices=best_indices,
                     activations=best_values,
                 )
+                print(f"COALESCE CONCAT: new_mid_out type: {type(new_mid_out)}")
+                print(f"COALESCE CONCAT: Calling with kwargs: {kwargs}")
 
                 out = new_mid_out(y, index=0, add_post_enc=False, **kwargs)
                 if advance:

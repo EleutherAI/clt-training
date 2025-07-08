@@ -493,7 +493,10 @@ class MatryoshkaMidDecoder(MidDecoder):
             print(f"{'='*80}")
             print(f"Input shape: {self.x.shape}")
             print(f"Target shape: {y.shape}")
-            print(f"Pre-acts shape: {self.pre_acts.shape}")
+            if self.pre_acts is not None:
+                print(f"Pre-acts shape: {self.pre_acts.shape}")
+            else:
+                print(f"Pre-acts: None")
             print(f"Number of latents: {self.sparse_coder.num_latents}")
             print(f"Expansion factors: {self.expansion_factors}")
             print(f"Number of slices: {len(slice_masks)}")
@@ -522,6 +525,8 @@ class MatryoshkaMidDecoder(MidDecoder):
                 print(f"  Activation range: {main_acts.min().item():.6f} to {main_acts.max().item():.6f}")
                 print(f"  Mean activation: {main_acts.mean().item():.6f}")
                 print(f"  Std activation: {main_acts.std().item():.6f}")
+            else:
+                print(f"\nMAIN ENCODING STATISTICS: main_acts is not a tensor")
             
             # Slice-by-slice analysis
             print(f"\n{'='*80}")
@@ -538,7 +543,12 @@ class MatryoshkaMidDecoder(MidDecoder):
                 print(f"  Latent range: 0 to {slice_size-1}")
                 
                 # Apply mask to pre_acts (batchtopk already applied if activation == "batchtopk")
-                slice_pre_acts = self.pre_acts * slice_mask.float()
+                if self.pre_acts is not None:
+                    slice_pre_acts = self.pre_acts * slice_mask.float()
+                else:
+                    # If pre_acts is None, we can't compute slice losses
+                    print(f"WARNING: pre_acts is None, skipping slice {i+1}")
+                    continue
                 
                 # Pre-activation statistics for this slice
                 slice_pre_non_zero = (slice_pre_acts != 0).sum().item()
@@ -617,6 +627,8 @@ class MatryoshkaMidDecoder(MidDecoder):
                 print(f"  Main encoding FVU: {main_fvu.item():.6f}")
                 print(f"  Matryoshka total FVU: {total_fvu.item():.6f}")
                 print(f"  Difference: {total_fvu.item() - main_fvu.item():.6f}")
+            else:
+                print(f"\nCOMPARISON WITH MAIN ENCODING: main_acts is not a tensor")
             
             print(f"{'='*80}\n")
 
@@ -1065,8 +1077,8 @@ class SparseCoder(nn.Module):
             # Standard encoding (uses fused_encoder)
             top_acts, top_indices, pre_acts = self.encode(x)
             
-            # Compute pre_acts if needed
-            if pre_acts is None and not self.multi_target:
+            # Compute pre_acts if needed (for both regular and Matryoshka training)
+            if pre_acts is None:
                 import torch.nn.functional as F
                 x_norm = self.normalize_input(x)
                 if not self.cfg.transcode:
