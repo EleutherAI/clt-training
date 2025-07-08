@@ -315,7 +315,11 @@ class MatryoshkaMidDecoder(MidDecoder):
         expansion_factors: Optional[List[float]] = None,
     ):
         super().__init__(sparse_coder, x, activations, indices, pre_acts, dead_mask)
-        self.expansion_factors = expansion_factors or [0.25, 0.5, 1.0]  # Default: [16, 32, 64] if k=64
+        if expansion_factors is not None:
+            # Convert integers to floats (assuming they represent percentages)
+            self.expansion_factors = [float(ef) / 100.0 if ef > 1 else float(ef) for ef in expansion_factors]
+        else:
+            self.expansion_factors = [0.25, 0.5, 1.0]  # Default: [16, 32, 64] if k=64
         
     def _create_slice_masks(self) -> List[Tensor]:
         """Create masks for each slice based on expansion factors."""
@@ -1066,13 +1070,15 @@ class SparseCoder(nn.Module):
             if self.cfg.matryoshka:
                 # Use MatryoshkaMidDecoder with expansion factors
                 expansion_factors = self.cfg.matryoshka_expansion_factors or [0.25, 0.5, 1.0]
+                print(f"USING MATRYOSHKA MIDDECODER with expansion factors: {expansion_factors}")
                 mid_decoder = MatryoshkaMidDecoder(
-                    self, x, top_acts, top_indices, pre_acts, 
+                    self, x, top_acts, top_indices, pre_acts, dead_mask,
                     expansion_factors=expansion_factors
                 )
             else:
                 # Use regular MidDecoder
-                mid_decoder = MidDecoder(self, x, top_acts, top_indices, pre_acts)
+                print(f" USING REGULAR MIDDECODER")
+                mid_decoder = MidDecoder(self, x, top_acts, top_indices, pre_acts, dead_mask)
             
             if self.multi_target or return_mid_decoder:
                 return mid_decoder
