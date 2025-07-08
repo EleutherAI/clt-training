@@ -5,7 +5,7 @@ from dataclasses import asdict, replace
 from fnmatch import fnmatchcase
 from functools import partial
 from glob import glob
-from typing import Sized
+from typing import Sized, Optional, List
 
 import torch
 import torch.distributed as dist
@@ -26,7 +26,7 @@ from .kernels import dense_dense_cooout_matmul
 
 # from .nanogpt import Muon
 from .muon import Muon
-from .runner import CrossLayerRunner, MatryoshkaRunner
+from .runner import CrossLayerRunner
 from .sign_sgd import SignSGD
 from .sparse_coder import ForwardOutput, SparseCoder
 from .utils import (
@@ -491,7 +491,6 @@ class Trainer:
         cached_outputs = {}
         grad_scalers = {}
         runner = CrossLayerRunner()
-        matryoshka_runner = MatryoshkaRunner()
 
         def record_inputs(module: nn.Module, inputs, outputs):
             if isinstance(inputs, tuple):
@@ -609,11 +608,8 @@ class Trainer:
             if raw.cfg.normalize_decoder and not self.cfg.sae.transcode:
                 raw.set_decoder_norm_to_unit_norm()
 
-            # Choose the appropriate runner based on whether matryoshka is enabled
-            if self.cfg.sae.matryoshka:
-                current_runner = matryoshka_runner
-            else:
-                current_runner = runner
+            # Always use CrossLayerRunner - Matryoshka logic is now handled in MatryoshkaMidDecoder
+            current_runner = runner
 
             out = current_runner(
                 inputs,
@@ -747,7 +743,6 @@ class Trainer:
             bos_mask = x == self.model.config.bos_token_id
 
             runner.reset()
-            matryoshka_runner.reset()
 
             # Bookkeeping for dead feature detection
             N = x.numel()
@@ -786,7 +781,12 @@ class Trainer:
             
             handles = [
                 mod.register_forward_hook(
-                    hook_function if name in self.cfg.hookpoints else record_inputs
+                    partial(
+                        hook,
+                        force_loss_fn=None if self.cfg.loss_fn != "kl-fvu" else "kl",
+                    )
+                    if name in self.cfg.hookpoints
+                    else record_inputs
                 )
                 for name, mod in name_to_module.items()
             ]

@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import einops
 import torch
@@ -40,25 +40,6 @@ class ForwardOutput:
 
     is_last: bool = False
     """Whether this is the last target in a multi-target setup."""
-
-
-@dataclass
-class MatryoshkaSliceResult:
-    """Result for a single Matryoshka slice."""
-    slice_k: int
-    top_acts: Tensor
-    top_indices: Tensor
-    fvu: Tensor
-    auxk_loss: Tensor
-    multi_topk_fvu: Tensor
-
-
-@dataclass
-class MatryoshkaEncoderOutput:
-    """Output from Matryoshka slice encoding."""
-    slice_results: List[MatryoshkaSliceResult]
-    x: Tensor
-    dead_mask: Optional[Tensor] = None
 
 
 class MidDecoder:
@@ -304,6 +285,335 @@ class MidDecoder:
             fvu,
             auxk_loss,
             multi_topk_fvu,
+            is_last,
+        )
+
+
+class MatryoshkaMidDecoder(MidDecoder):
+    """Matryoshka-style MidDecoder that computes aggregated losses across multiple slices.
+    
+    This class inherits from MidDecoder and works exactly the same way for core functionality
+    (decoding, post-encoder additions, etc.) but computes losses differently. Instead of
+    computing loss on a single top-k selection, it computes losses across multiple slices
+    of different sizes and aggregates them.
+    
+    The key difference is in the loss computation:
+    - Regular MidDecoder: Single loss computation on the main top-k selection
+    - MatryoshkaMidDecoder: Multiple loss computations on different slice sizes, then summed
+    
+    This enables training with multiple granularities simultaneously, as described in the
+    Matryoshka SAE paper: https://www.lesswrong.com/posts/rKM9b6B2LqwSB5ToN/learning-multi-level-features-with-matryoshka-saes
+    """
+    def __init__(
+        self,
+        sparse_coder: "SparseCoder",
+        x: Tensor,
+        activations: Tensor,
+        indices: Tensor,
+        pre_acts: Optional[Tensor] = None,
+        dead_mask: Optional[Tensor] = None,
+        expansion_factors: Optional[List[float]] = None,
+    ):
+        super().__init__(sparse_coder, x, activations, indices, pre_acts, dead_mask)
+        self.expansion_factors = expansion_factors or [0.25, 0.5, 1.0]  # Default: [16, 32, 64] if k=64
+        
+    def _create_slice_masks(self) -> List[Tensor]:
+        """Create masks for each slice based on expansion factors."""
+        masks = []
+        for ef in self.expansion_factors:
+            slice_size = int(self.sparse_coder.num_latents * ef)
+            mask = torch.arange(self.sparse_coder.num_latents, device=self.x.device) < slice_size
+            masks.append(mask)
+        return masks
+    
+    def _compute_slice_loss_fast(
+        self,
+        slice_top_acts: Tensor,
+        slice_top_indices: Tensor,
+        y: Tensor,
+        index: int = 0,
+        loss_mask: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        """Fast loss computation for a single slice without creating a full MidDecoder.
+        
+        This method computes the same losses as a full MidDecoder but without the overhead
+        of creating a new MidDecoder object for each slice. It directly calls the decoder
+        and computes FVU, AuxK, and Multi-TopK losses.
+        """
+        # Decode the slice
+        slice_sae_out = self.sparse_coder.decode(slice_top_acts, slice_top_indices, index)
+        
+        # Add skip connection if enabled
+        W_skip = (
+            self.sparse_coder.W_skips[index]
+            if hasattr(self.sparse_coder, "W_skips")
+            else self.sparse_coder.W_skip
+        )
+        if W_skip is not None:
+            slice_sae_out += self.x.to(self.sparse_coder.dtype) @ W_skip.mT
+        
+        # Denormalize output
+        slice_sae_out = self.sparse_coder.denormalize_output(slice_sae_out)
+        
+        # Compute residual
+        e = y - slice_sae_out
+        if loss_mask is not None:
+            e = e * loss_mask[..., None]
+        
+        # Compute FVU
+        total_variance = (y - y.mean(0)).pow(2).sum()
+        l2_loss = e.pow(2).sum()
+        fvu = l2_loss / total_variance
+        
+        # Compute AuxK loss (simplified - just use dead features from main pre_acts)
+        if (
+            self.dead_mask is not None
+            and self.pre_acts is not None
+            and (num_dead := int(self.dead_mask.sum())) > 0
+        ):
+            k_aux = y.shape[-1] // 2
+            scale = min(num_dead / k_aux, 1.0)
+            k_aux = min(k_aux, num_dead)
+            
+            auxk_latents = torch.where(
+                self.dead_mask[None], self.pre_acts, -torch.inf
+            )
+            auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
+            e_hat = self.sparse_coder.decode(auxk_acts, auxk_indices, index)
+            auxk_loss = (e_hat - e.detach()).pow(2).sum()
+            auxk_loss = scale * auxk_loss / total_variance
+        else:
+            auxk_loss = slice_sae_out.new_tensor(0.0)
+        
+        # Compute Multi-TopK FVU (simplified - use main pre_acts)
+        if self.sparse_coder.cfg.multi_topk and self.pre_acts is not None:
+            top_acts, top_indices = self.pre_acts.topk(
+                4 * self.sparse_coder.cfg.k, sorted=False
+            )
+            multi_sae_out = self.sparse_coder.decode(top_acts, top_indices, index)
+            multi_topk_fvu = (multi_sae_out - y).pow(2).sum() / total_variance
+        else:
+            multi_topk_fvu = slice_sae_out.new_tensor(0.0)
+        
+        return fvu, auxk_loss, multi_topk_fvu
+
+    @torch.autocast(
+        "cuda",
+        dtype=torch.bfloat16,
+        enabled=torch.cuda.is_bf16_supported(),
+    )
+    def __call__(
+        self,
+        y: Tensor | None,
+        index: Optional[int] = None,
+        addition: float | Tensor = 0,
+        no_extras: bool = False,
+        denormalize: bool = True,
+        add_post_enc: bool = True,
+        loss_mask: Tensor | None = None,
+    ) -> ForwardOutput:
+        # If we aren't given a distinct target, we're autoencoding
+        if y is None:
+            y = self.x
+            if isinstance(y, dtensor.DTensor):
+                y = y.redistribute(
+                    y.device_mesh, (dtensor.Replicate(), dtensor.Shard(1))
+                )
+
+        assert isinstance(y, Tensor), "y must be a tensor."
+        if add_post_enc:
+            latent_acts = self.current_latent_acts
+        else:
+            latent_acts = self.latent_acts
+        if index is None:
+            index = self.index
+            self.next()
+        elif self.sparse_coder.cfg.n_targets > 0:
+            assert 0 <= index < self.sparse_coder.cfg.n_targets, "Index out of bounds."
+        is_last = self.index >= self.sparse_coder.cfg.n_targets
+
+        # Decode (same as MidDecoder)
+        if latent_acts is None and self.latent_indices is None:
+            sae_out = torch.zeros_like(self.x)
+        else:
+            latent_indices = self.latent_indices
+            if isinstance(latent_indices, dtensor.DTensor):
+                latent_indices = latent_indices.redistribute(
+                    latent_indices.device_mesh,
+                    [dtensor.Shard(0), dtensor.Replicate()],
+                )
+            sae_out = self.sparse_coder.decode(latent_acts, latent_indices, index)
+        W_skip = (
+            self.sparse_coder.W_skips[index]
+            if hasattr(self.sparse_coder, "W_skips")
+            else self.sparse_coder.W_skip
+        )
+        if W_skip is not None:
+            sae_out += self.x.to(self.sparse_coder.dtype) @ W_skip.mT
+        sae_out += addition
+
+        if denormalize:
+            sae_out = self.sparse_coder.denormalize_output(sae_out)
+
+        if no_extras:
+            return ForwardOutput(
+                sae_out,
+                self.latent_acts,
+                self.latent_indices,
+                sae_out.new_tensor(0.0),
+                sae_out.new_tensor(0.0),
+                sae_out.new_tensor(0.0),
+                is_last,
+            )
+        else:
+            # MATRYOSHKA LOSS COMPUTATION - DIFFERENT FROM MidDecoder
+            # Compute aggregated losses across all slices
+            total_fvu = 0.0
+            total_auxk_loss = 0.0
+            total_multi_topk_fvu = 0.0
+            
+            # Create slice masks
+            slice_masks = self._create_slice_masks()
+            
+            print(f"\n{'='*80}")
+            print(f"MATRYOSHKA MIDDECODER DEBUG - {self.sparse_coder.cfg.activation}")
+            print(f"{'='*80}")
+            print(f"Input shape: {self.x.shape}")
+            print(f"Target shape: {y.shape}")
+            print(f"Pre-acts shape: {self.pre_acts.shape}")
+            print(f"Number of latents: {self.sparse_coder.num_latents}")
+            print(f"Expansion factors: {self.expansion_factors}")
+            print(f"Number of slices: {len(slice_masks)}")
+            
+            # Dead latent statistics
+            if self.dead_mask is not None:
+                num_dead = int(self.dead_mask.sum())
+                num_total = self.dead_mask.numel()
+                dead_percent = (num_dead / num_total) * 100
+                print(f"\nDEAD LATENT STATISTICS:")
+                print(f"  Dead latents: {num_dead:,} / {num_total:,} ({dead_percent:.1f}%)")
+                print(f"  Live latents: {num_total - num_dead:,} / {num_total:,} ({100-dead_percent:.1f}%)")
+            else:
+                print(f"\nDEAD LATENT STATISTICS: No dead mask provided")
+            
+            # Main encoding statistics
+            main_acts = self.latent_acts
+            main_indices = self.latent_indices
+            if isinstance(main_acts, torch.Tensor):
+                main_non_zero = (main_acts != 0).sum().item()
+                main_total = main_acts.numel()
+                main_sparsity = ((main_total - main_non_zero) / main_total) * 100
+                print(f"\nMAIN ENCODING STATISTICS:")
+                print(f"  Non-zero activations: {main_non_zero:,} / {main_total:,} ({100-main_sparsity:.1f}%)")
+                print(f"  Zero activations: {main_total - main_non_zero:,} / {main_total:,} ({main_sparsity:.1f}%)")
+                print(f"  Activation range: {main_acts.min().item():.6f} to {main_acts.max().item():.6f}")
+                print(f"  Mean activation: {main_acts.mean().item():.6f}")
+                print(f"  Std activation: {main_acts.std().item():.6f}")
+            
+            # Slice-by-slice analysis
+            print(f"\n{'='*80}")
+            print(f"SLICE-BY-SLICE ANALYSIS")
+            print(f"{'='*80}")
+            
+            # Compute losses for each slice
+            for i, slice_mask in enumerate(slice_masks):
+                slice_size = int(slice_mask.sum().item())
+                slice_percent = (slice_size / self.sparse_coder.num_latents) * 100
+                
+                print(f"\n--- SLICE {i+1} ({slice_percent:.1f}% of latents) ---")
+                print(f"  Slice size: {slice_size} latents")
+                print(f"  Latent range: 0 to {slice_size-1}")
+                
+                # Apply mask to pre_acts (batchtopk already applied if activation == "batchtopk")
+                slice_pre_acts = self.pre_acts * slice_mask.float()
+                
+                # Pre-activation statistics for this slice
+                slice_pre_non_zero = (slice_pre_acts != 0).sum().item()
+                slice_pre_total = slice_pre_acts.numel()
+                slice_pre_sparsity = ((slice_pre_total - slice_pre_non_zero) / slice_pre_total) * 100
+                print(f"  Pre-activations (masked):")
+                print(f"    Non-zero: {slice_pre_non_zero:,} / {slice_pre_total:,} ({100-slice_pre_sparsity:.1f}%)")
+                print(f"    Range: {slice_pre_acts.min().item():.6f} to {slice_pre_acts.max().item():.6f}")
+                print(f"    Mean: {slice_pre_acts.mean().item():.6f}")
+                
+                # Apply top-k to this slice
+                slice_top_acts, slice_top_indices = torch.topk(
+                    slice_pre_acts, self.sparse_coder.cfg.k, dim=1, sorted=False
+                )
+                
+                # Top-k statistics for this slice
+                slice_top_non_zero = (slice_top_acts != 0).sum().item()
+                slice_top_total = slice_top_acts.numel()
+                slice_top_sparsity = ((slice_top_total - slice_top_non_zero) / slice_top_total) * 100
+                print(f"  Top-k activations:")
+                print(f"    Non-zero: {slice_top_non_zero:,} / {slice_top_total:,} ({100-slice_top_sparsity:.1f}%)")
+                print(f"    Range: {slice_top_acts.min().item():.6f} to {slice_top_acts.max().item():.6f}")
+                print(f"    Mean: {slice_top_acts.mean().item():.6f}")
+                print(f"    Indices range: {slice_top_indices.min().item()} to {slice_top_indices.max().item()}")
+                
+                # Compute losses for this slice
+                slice_fvu, slice_auxk, slice_multi = self._compute_slice_loss_fast(
+                    slice_top_acts, slice_top_indices, y, index, loss_mask
+                )
+                
+                # Normalize gradients to balance training across slices
+                # Weight by slice size so larger slices contribute more
+                slice_size_float = slice_mask.sum().float()
+                total_latents = self.sparse_coder.num_latents
+                slice_weight = slice_size_float / total_latents  # Proportional to slice size
+                
+                # Scale the losses by slice weight
+                slice_fvu_weighted = slice_fvu * slice_weight
+                slice_auxk_weighted = slice_auxk * slice_weight
+                slice_multi_weighted = slice_multi * slice_weight
+                
+                # Loss statistics for this slice
+                print(f"  Loss computation:")
+                print(f"    Raw FVU: {slice_fvu.item():.6f}")
+                print(f"    Raw AuxK: {slice_auxk.item():.6f}")
+                print(f"    Raw Multi-TopK: {slice_multi.item():.6f}")
+                print(f"    Slice weight: {slice_weight:.3f}")
+                print(f"    Weighted FVU: {slice_fvu_weighted.item():.6f}")
+                print(f"    Weighted AuxK: {slice_auxk_weighted.item():.6f}")
+                print(f"    Weighted Multi-TopK: {slice_multi_weighted.item():.6f}")
+                
+                # Accumulate losses
+                total_fvu += slice_fvu_weighted
+                total_auxk_loss += slice_auxk_weighted
+                total_multi_topk_fvu += slice_multi_weighted
+            
+            # Final aggregated statistics
+            print(f"\n{'='*80}")
+            print(f"FINAL AGGREGATED RESULTS")
+            print(f"{'='*80}")
+            print(f"Total weighted FVU: {total_fvu.item():.6f}")
+            print(f"Total weighted AuxK: {total_auxk_loss.item():.6f}")
+            print(f"Total weighted Multi-TopK: {total_multi_topk_fvu.item():.6f}")
+            print(f"Total loss (sum): {total_fvu.item() + total_auxk_loss.item() + total_multi_topk_fvu.item():.6f}")
+            
+            # Compare with main encoding
+            if isinstance(main_acts, torch.Tensor):
+                main_sae_out = self.sparse_coder.decode(main_acts, main_indices, index)
+                if hasattr(self.sparse_coder, 'W_skip') and self.sparse_coder.W_skip is not None:
+                    main_sae_out += self.x.to(self.sparse_coder.dtype) @ self.sparse_coder.W_skip.mT
+                main_sae_out = self.sparse_coder.denormalize_output(main_sae_out)
+                main_e = y - main_sae_out
+                main_total_variance = (y - y.mean(0)).pow(2).sum()
+                main_fvu = main_e.pow(2).sum() / main_total_variance
+                print(f"\nCOMPARISON WITH MAIN ENCODING:")
+                print(f"  Main encoding FVU: {main_fvu.item():.6f}")
+                print(f"  Matryoshka total FVU: {total_fvu.item():.6f}")
+                print(f"  Difference: {total_fvu.item() - main_fvu.item():.6f}")
+            
+            print(f"{'='*80}\n")
+
+        return ForwardOutput(
+            sae_out,
+            self.latent_acts,
+            self.latent_indices,
+            total_fvu,
+            total_auxk_loss,
+            total_multi_topk_fvu,
             is_last,
         )
 
@@ -711,79 +1021,6 @@ class SparseCoder(nn.Module):
             self.cfg.use_fp8,
         )
 
-    def encode_matryoshka_slices(
-        self, 
-        x: Tensor, 
-        k_values: List[int], 
-        y: Tensor,
-        dead_mask: Optional[Tensor] = None,
-        loss_mask: Optional[Tensor] = None,
-    ) -> MatryoshkaEncoderOutput:
-        """Encode input and compute slice-specific results without materializing pre_acts.
-        
-        This method computes top-k results for each Matryoshka slice directly,
-        avoiding the need to materialize the full pre_acts tensor.
-        """
-        import torch.nn.functional as F
-        
-        # Normalize input
-        x_norm = self.normalize_input(x)
-        if not self.cfg.transcode:
-            x_norm = x_norm - self.b_dec
-            
-        # Compute pre-activations (linear + ReLU)
-        pre_acts = F.relu(F.linear(x_norm, self.encoder.weight, self.encoder.bias))
-        
-        slice_results = []
-        k = self.cfg.k
-        activation = self.cfg.activation
-        
-        # Process each slice
-        for slice_k in sorted(k_values):
-            # Create mask for this slice
-            subset_mask = torch.arange(pre_acts.shape[1], device=pre_acts.device) < slice_k
-            
-            # Apply mask to get subset of pre-activations
-            subset_pre_acts = pre_acts * subset_mask.float()
-            
-            # Apply batchtopk if needed
-            if activation == "batchtopk":
-                from .fused_encoder import batch_topk
-                subset_pre_acts = batch_topk(subset_pre_acts, k)
-            
-            # Apply top-k to the subset
-            top_acts, top_indices = torch.topk(subset_pre_acts, k, dim=1, sorted=False)
-            
-            # Create MidDecoder for this slice
-            slice_mid = MidDecoder(
-                self, x_norm, top_acts, top_indices, dead_mask, pre_acts
-            )
-            
-            # Compute losses for this slice
-            slice_output = slice_mid(
-                y,
-                index=0,
-                add_post_enc=False,
-                loss_mask=loss_mask,
-            )
-            
-            # Store results
-            slice_result = MatryoshkaSliceResult(
-                slice_k=slice_k,
-                top_acts=top_acts,
-                top_indices=top_indices,
-                fvu=slice_output.fvu,
-                auxk_loss=slice_output.auxk_loss,
-                multi_topk_fvu=slice_output.multi_topk_fvu,
-            )
-            slice_results.append(slice_result)
-        
-        return MatryoshkaEncoderOutput(
-            slice_results=slice_results,
-            x=x_norm,
-            dead_mask=dead_mask,
-        )
-
     def decode(
         self,
         top_acts: Tensor | dtensor.DTensor,
@@ -812,9 +1049,10 @@ class SparseCoder(nn.Module):
             dtype=torch.bfloat16 if self.cfg.dtype != "float16" else torch.float16,
             enabled=torch.cuda.is_bf16_supported(),
         ):
+            # Standard encoding (uses fused_encoder)
             top_acts, top_indices, pre_acts = self.encode(x)
             
-            # Since fused encoder no longer returns pre_acts, compute it manually if needed
+            # Compute pre_acts if needed
             if pre_acts is None and not self.multi_target:
                 import torch.nn.functional as F
                 x_norm = self.normalize_input(x)
@@ -822,14 +1060,20 @@ class SparseCoder(nn.Module):
                     x_norm = x_norm - self.b_dec
                 pre_acts = F.relu(F.linear(x_norm, self.encoder.weight, self.encoder.bias))
             
-            if self.multi_target:
-                pre_acts = None
-
             x = self.normalize_input(x)
-
-            mid_decoder = MidDecoder(
-                self, x, top_acts, top_indices, dead_mask, pre_acts
-            )
+            
+            # Choose MidDecoder type based on matryoshka setting
+            if self.cfg.matryoshka:
+                # Use MatryoshkaMidDecoder with expansion factors
+                expansion_factors = self.cfg.matryoshka_expansion_factors or [0.25, 0.5, 1.0]
+                mid_decoder = MatryoshkaMidDecoder(
+                    self, x, top_acts, top_indices, pre_acts, 
+                    expansion_factors=expansion_factors
+                )
+            else:
+                # Use regular MidDecoder
+                mid_decoder = MidDecoder(self, x, top_acts, top_indices, pre_acts)
+            
             if self.multi_target or return_mid_decoder:
                 return mid_decoder
             else:
