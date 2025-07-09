@@ -9,8 +9,8 @@ import pandas as pd
 import os
 sns.set_theme()
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
-# model_type = "gpt2"
-model_type = "gemma2-2b"
+model_type = "gpt2"
+# model_type = "gemma2-2b"
 # model_type = "llama-1b"
 eval_path = Path(f"results/{model_type}-eval/")
 model_name = {
@@ -34,6 +34,8 @@ run_names = {
         "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "CLT, no skip",
         "bs32-lr2e-4-source-tied-ef128-k16-adam8": "Source-Tied CLST",
         "bs32-lr2e-4-source-target-tied-ef128-k16-adam8": "ST-Tied CLST",
+        "_EleutherAI_gpt2-curt-clt-untied_global_batchtopk_jumprelu": "Curt CLT",
+        "bs32-lr2e-4-clt-noskip-ef34-k16-adam8-bf16": "CLT, EF=34"
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "PLT, no skip",

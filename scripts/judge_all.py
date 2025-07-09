@@ -10,8 +10,8 @@ import subprocess
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
 # model_type = "llama-1b"
-# model_type = "gpt2"
-model_type = "gemma2-2b"
+model_type = "gpt2"
+# model_type = "gemma2-2b"
 judge_ctx = "j1"
 
 eval_data = json.load(open(f"data/{model_type}-eval-data/data.json"))
@@ -26,6 +26,8 @@ run_names = {
         "../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16",
         "bs32-lr2e-4-source-tied-ef128-k16-adam8",
         "bs32-lr2e-4-source-target-tied-ef128-k16-adam8",
+        "/EleutherAI/gpt2-curt-clt-untied_global_batchtopk_jumprelu",
+        "bs32-lr2e-4-clt-noskip-ef34-k16-adam8-bf16"
     ],
     "gemma2-2b": [
         "gemma-mntss-no-skip",
@@ -45,7 +47,8 @@ run_names = {
 }[model_type]
 extra_args = {
     "gpt2": {
-        "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "--offload=True",
+        # "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "--offload=True",
+        "/EleutherAI/gpt2-curt-clt-untied_global_batchtopk_jumprelu": "--pre_ln_hook=True",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",

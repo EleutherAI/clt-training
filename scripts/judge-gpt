@@ -4,7 +4,11 @@ set -e
 
 MODEL_NAME=gpt2
 NAME=$1
-CHECKPOINT_PATH=$PWD/checkpoints/gpt2-sweep/$NAME
+if [[ "$NAME" == /* ]]; then
+    CHECKPOINT_PATH=${NAME:1}
+else
+    CHECKPOINT_PATH=$PWD/checkpoints/gpt2-sweep/$NAME
+fi
 NAME=${NAME//\//_}
 
 
@@ -31,4 +35,5 @@ uv run python -m attribute \
 "$PROMPT_TEXT" \
 --cache_features=False --save_graph=False \
 --save_dir=$SAVE_DIR \
---transcoder_path="$CHECKPOINT_PATH" --model_name="$MODEL_NAME" # --remove_prefix 1
+--transcoder_path="$CHECKPOINT_PATH" --model_name="$MODEL_NAME" \
+${@:2}
