@@ -618,9 +618,7 @@ class Trainer:
                     if self.cfg.auxk_alpha > 0
                     else None
                 ),
-                loss_mask=(
-                    ~bos_mask_mesh if loss_fn == "fvu" and self.cfg.filter_bos else None
-                ),
+                loss_mask=(~bos_mask_mesh if loss_fn == "fvu" else None),
             )
             output = out.sae_out
 
@@ -737,6 +735,10 @@ class Trainer:
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
             bos_mask = x == self.model.config.bos_token_id
+            if not self.cfg.filter_bos:
+                bos_mask &= 0
+            if self.cfg.remove_first_token:
+                bos_mask |= torch.arange(x.shape[1], device=x.device) == 0
 
             runner.reset()
 

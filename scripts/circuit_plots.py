@@ -34,8 +34,22 @@ run_names = {
         "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "CLT, no skip",
         "bs32-lr2e-4-source-tied-ef128-k16-adam8": "Source-Tied CLST",
         "bs32-lr2e-4-source-target-tied-ef128-k16-adam8": "ST-Tied CLST",
+        "bs32-lr2e-4-clt-noskip-ef34-k16-adam8-bf16": "CLT, EF=34",
+        "_EleutherAI_gpt2-mntss-transcoder-clt-relu-sp10-1b": "mCLT sp10",
+        "_EleutherAI_gpt2-mntss-transcoder-relu-sp6-skip": "mPLT, skip",
+        "_EleutherAI_gpt2-mntss-transcoder-clt-relu-sp8": "mCLT sp8",
         "_EleutherAI_gpt2-curt-clt-untied_global_batchtopk_jumprelu": "Curt CLT",
-        "bs32-lr2e-4-clt-noskip-ef34-k16-adam8-bf16": "CLT, EF=34"
+        "_EleutherAI_gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu": "Curt TCLT",
+
+        "bs8-lr2e-4-no-affine-ef128-k8": "NA skip, k=8",
+        "bs8-lr2e-4-no-affine-ef128-k16": "NA skip, k=16",
+        "bs8-lr2e-4-no-affine-ef128-k24": "NA skip, k=24",
+        "bs8-lr2e-4-no-affine-ef128-k32": "NA skip, k=32",
+
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k8": "NA, k=8",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k24": "NA, k=24",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k32": "NA, k=32",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "PLT, no skip",
@@ -47,6 +61,7 @@ run_names = {
         "EleutherAI_llama1b-clt-tied-ef64-k16": "Tied CLT, skip",
         "._checkpoints_llama-sweep_bs32_lr2e-4_none_ef64_k32": "PLT, skip, k=32",
         "._checkpoints_llama-sweep_bs16_lr2e-4_no-skip_ef64_k32": "PLT, no skip, k=32",
+        "._checkpoints_llama-sweep_tied-pre_ef64_k32_bs32_lr2e-4": "Pre- Tied CLT",
         "EleutherAI_Llama-3.2-1B-mntss-skip-transcoder": "PLT, skip, ReLU",
         "mntss_skip-transcoder-Llama-3.2-1B-131k-nobos": "PLT, skip, TopK",
         "EleutherAI_Llama-3.2-1B-mntss-transcoder-no-skip-sp10": "PLT, no skip, sp10",
@@ -54,7 +69,7 @@ run_names = {
     }
 }[model_type]
 # metric = "replacement_score_unpruned"
-metric = "sweep_pruning_results.200.replacement_score"
+metric = "sweep_pruning_results.100.replacement_score"
 # metric = "errors.8"
 # metric = "sweep_pruning_results.100.completeness_score"
 # metric = "completeness_score_unpruned"
@@ -79,7 +94,7 @@ for res_set in result_sets.values():
 results = {k: [v[k2] for k2 in result_set] for k, v in results.items()}
 
 result_mean_std = {k: (np.mean(v), np.std(v)) for k, v in results.items()}
-plt.figure(figsize=(15, 5))
+plt.figure(figsize=(32, 10))
 all_results = []
 for run_name_str, results_list in results.items():
     all_results.extend([
@@ -114,7 +129,7 @@ for run_name, averages in averages.items():
         plt.errorbar(k, averages[k], yerr=std, color=plt.gca().lines[-1].get_color(), capsize=3)
 plt.legend()
 plt.xlabel("Average L0")
-plt.ylabel(f"{metric}")
+plt.ylabel("Replacement score")
 plt.title(f"Circuit score ({len(result_set)} prompts), {model_name}")
 # %%
 

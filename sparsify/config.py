@@ -125,6 +125,9 @@ class TrainConfig(Serializable):
     filter_bos: bool = False
     """Filter out BOS tokens from the dataset for KL loss."""
 
+    remove_first_token: bool = False
+    """Remove the first token from each sequence."""
+
     remove_transcoded_modules: bool = False
     """Don't run modules that are replaced for transcoders with CE loss."""
 
