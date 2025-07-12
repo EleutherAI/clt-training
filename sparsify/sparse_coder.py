@@ -16,7 +16,7 @@ from torch.distributed.tensor.device_mesh import DeviceMesh
 
 from .config import SparseCoderConfig
 from .fused_encoder import NO_COMPILE, EncoderOutput, fused_encoder
-from .utils import barrier, decoder_impl, load_sharded, save_sharded
+from .utils import decoder_impl, load_sharded, save_sharded
 
 
 @dataclass
@@ -575,7 +575,6 @@ class SparseCoder(nn.Module):
         current_state_dict = self.state_dict()
 
         filename = str(Path(path) / "sae.safetensors")
-        barrier()
         if self.mesh is None:
             state_dict = load_file(
                 filename,
@@ -640,8 +639,6 @@ class SparseCoder(nn.Module):
         for k, v in items:
             state_dict[k] = v
         self.load_state_dict(state_dict, strict=strict)
-
-        barrier()
 
     def save_to_disk(self, path: Path | str):
         path = Path(path)

@@ -1,3 +1,45 @@
+# clt-training
+
+This repo is a fork of [sparsify](https://github.com/eleutherai/sparsify). It adds support for training [cross-layer transcoders](https://transformer-circuits.pub/2024/crosscoders/index.html) (CLTs). Other changes include:
+- Tensor parallelism with DTensor
+- More sparse kernel usage
+- Support for bfloat16 training
+- Can insert input hookpoints before layernorm
+- KL+FVU training (https://arxiv.org/abs/2503.17272)
+
+## Installation
+
+```
+uv venv --seed && uv sync
+```
+
+If you encounter issues, some things to try:
+* Allow looser torch version requirements
+* Remove torch CUDA index from `[[tool.uv.index]]/[tool.uv]/[tool.uv.sources]`
+
+## Usage
+
+`scripts/training` contains scripts for training GPT2 and Llama transcoders.
+
+Basic usage:
+
+```
+uv run python -m sparsify <MODEL NAME> <DATASET NAME> --run_name <NAME>
+--filter_bos True --ctx_len 2048 --max_examples 1000000
+--transcode=True --skip_connection=True
+--tp=2 --expansion_factor 128 --k 32
+--cross_layer=12  # CLT with 12 layers ahead
+--train_post_encoder=True --post_encoder_scale=True  # affine operation after encoder
+# --coalesce_topk=concat --topk_coalesced=False  # per-target tied CLT
+--lr 1e-4 --optimizer adam --b1 0.0 --b2 0.999 --lr_warmup_steps 50
+```
+
+Checkpoints are saved in `checkpoints/<NAME>`. Note that you need a recent version of `wandb` for logging.
+
+# sparsify
+
+This is the README for the original repo.
+
 ## Introduction
 This library trains _k_-sparse autoencoders (SAEs) and transcoders on the activations of HuggingFace language models, roughly following the recipe detailed in [Scaling and evaluating sparse autoencoders](https://arxiv.org/abs/2406.04093v1) (Gao et al. 2024).
 
