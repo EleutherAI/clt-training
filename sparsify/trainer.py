@@ -216,7 +216,7 @@ class Trainer:
                     torch.optim.Adam(
                         [param for param in params if param not in muon_param_set],
                         lr=cfg.lr or 2e-3,
-                        betas=(cfg.beta1, cfg.beta2),
+                        betas=(cfg.b1, cfg.b2),
                     ),
                 ]
                 self.lr_schedulers = [
