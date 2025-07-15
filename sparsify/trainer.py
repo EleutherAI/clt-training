@@ -671,7 +671,7 @@ class Trainer:
             if not self.cfg.filter_bos:
                 bos_mask &= 0
             if self.cfg.remove_first_token:
-                bos_mask |= torch.arange(x.shape[1], device=x.device) == 0
+                bos_mask[:, 0] = True
 
             runner.reset()
 

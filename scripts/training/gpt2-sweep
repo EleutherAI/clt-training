@@ -42,8 +42,6 @@ else
         CROSSING="--train_post_encoder=False" SCALING="" SKIP=""
     elif [ "$CFG" == "nonskip-tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False" SKIP=""
-    elif [ "$CFG" == "nonskip-tied-no-affine" ]; then
-        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$CFG" == "tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
     elif [ "$CFG" == "source-tied" ]; then
@@ -58,6 +56,8 @@ else
         CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False --train_post_encoder=False" SCALING=""
     elif [ "$CFG" == "tied-no-affine" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
+    elif [ "$CFG" == "nonskip-tied-no-affine" ]; then
+        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
     elif [ "$CFG" == "cross" ]; then
         # CROSSING="--cross_layer=12 --coalesce_topk=per-layer --topk_coalesced=False"
         # CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False"
@@ -121,7 +121,7 @@ N_DEVICES=$(( ($N_DEVICE_CHARS + 1) / 2 ))
 echo "Using $N_DEVICES devices"
 # WANDB_ENTITY=eleutherai uv run python -m sparsify \
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
-openai-community/gpt2 --ctx_len 128 --filter_bos=True \
+openai-community/gpt2 --ctx_len 128 --filter_bos=True --remove_first_token=True \
 --transcode=True $SKIP \
 --batch_size=$BS --expansion_factor=$EF --k=$K --tp=$N_DEVICES \
 --hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \

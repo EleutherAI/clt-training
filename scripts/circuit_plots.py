@@ -35,21 +35,22 @@ run_names = {
         "bs32-lr2e-4-source-tied-ef128-k16-adam8": "Source-Tied CLST",
         "bs32-lr2e-4-source-target-tied-ef128-k16-adam8": "ST-Tied CLST",
         "bs32-lr2e-4-clt-noskip-ef34-k16-adam8-bf16": "CLT, EF=34",
-        "_EleutherAI_gpt2-mntss-transcoder-clt-relu-sp10-1b": "mCLT sp10",
-        "_EleutherAI_gpt2-mntss-transcoder-relu-sp6-skip": "mPLT, skip",
-        "_EleutherAI_gpt2-mntss-transcoder-clt-relu-sp8": "mCLT sp8",
+        # "_EleutherAI_gpt2-mntss-transcoder-clt-relu-sp10-1b": "mCLT sp10",
+        # "_EleutherAI_gpt2-mntss-transcoder-relu-sp6-skip": "mPLT, skip",
+        # "_EleutherAI_gpt2-mntss-transcoder-clt-relu-sp8": "mCLT sp8",
         "_EleutherAI_gpt2-curt-clt-untied_global_batchtopk_jumprelu": "Curt CLT",
         "_EleutherAI_gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu": "Curt TCLT",
+        "_EleutherAI_gpt2-curt-clt-untied-layerwise-tokentopk": "Curt LW CLT",
 
-        "bs8-lr2e-4-no-affine-ef128-k8": "NA skip, k=8",
-        "bs8-lr2e-4-no-affine-ef128-k16": "NA skip, k=16",
-        "bs8-lr2e-4-no-affine-ef128-k24": "NA skip, k=24",
-        "bs8-lr2e-4-no-affine-ef128-k32": "NA skip, k=32",
+        # "bs8-lr2e-4-no-affine-ef128-k8": "NA skip, k=8",
+        # "bs8-lr2e-4-no-affine-ef128-k16": "NA skip, k=16",
+        # "bs8-lr2e-4-no-affine-ef128-k24": "NA skip, k=24",
+        # "bs8-lr2e-4-no-affine-ef128-k32": "NA skip, k=32",
 
-        "bs8-lr2e-4-nonskip-no-affine-ef128-k8": "NA, k=8",
-        "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
-        "bs8-lr2e-4-nonskip-no-affine-ef128-k24": "NA, k=24",
-        "bs8-lr2e-4-nonskip-no-affine-ef128-k32": "NA, k=32",
+        # "bs8-lr2e-4-nonskip-no-affine-ef128-k8": "NA, k=8",
+        # "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
+        # "bs8-lr2e-4-nonskip-no-affine-ef128-k24": "NA, k=24",
+        # "bs8-lr2e-4-nonskip-no-affine-ef128-k32": "NA, k=32",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "PLT, no skip",
@@ -69,8 +70,8 @@ run_names = {
     }
 }[model_type]
 # metric = "replacement_score_unpruned"
-metric = "sweep_pruning_results.100.replacement_score"
-# metric = "errors.8"
+# metric = "sweep_pruning_results.100.replacement_score"
+metric = "errors.2"
 # metric = "sweep_pruning_results.100.completeness_score"
 # metric = "completeness_score_unpruned"
 results = defaultdict(dict)
@@ -94,7 +95,7 @@ for res_set in result_sets.values():
 results = {k: [v[k2] for k2 in result_set] for k, v in results.items()}
 
 result_mean_std = {k: (np.mean(v), np.std(v)) for k, v in results.items()}
-plt.figure(figsize=(32, 10))
+plt.figure(figsize=(20, 10))
 all_results = []
 for run_name_str, results_list in results.items():
     all_results.extend([

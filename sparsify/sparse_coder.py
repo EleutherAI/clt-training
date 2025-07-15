@@ -223,7 +223,12 @@ class MidDecoder:
                 e = e * loss_mask[..., None]
 
             # Used as a denominator for putting everything on a reasonable scale
-            total_variance = (y - y.mean(0)).pow(2).sum()
+            if loss_mask is None:
+                total_variance = (y - y.mean(0)).pow(2).sum()
+            else:
+                lm = loss_mask[..., None]
+                y_mean = (y * lm).sum(0) / lm.sum(0)
+                total_variance = (y - y_mean).pow(2).mul(lm).sum()
 
             l2_loss = e.pow(2).sum()
             fvu = l2_loss / total_variance

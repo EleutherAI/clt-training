@@ -1,4 +1,3 @@
-
 #%%
 from transformers import AutoTokenizer
 import json
@@ -29,6 +28,7 @@ run_names = {
         "bs32-lr2e-4-source-target-tied-ef128-k16-adam8",
         "/EleutherAI/gpt2-curt-clt-untied_global_batchtopk_jumprelu",
         "/EleutherAI/gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu",
+        "/EleutherAI/gpt2-curt-clt-untied-layerwise-tokentopk",
         "bs32-lr2e-4-clt-noskip-ef34-k16-adam8-bf16",
         "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp10-1b",
         "/EleutherAI/gpt2-mntss-transcoder-relu-sp6-skip",
@@ -69,6 +69,7 @@ extra_args = {
         "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp10-1b": "--pre_ln_hook=True",
         "/EleutherAI/gpt2-mntss-transcoder-relu-sp6-skip": "--pre_ln_hook=True",
         "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp8": "--pre_ln_hook=True",
+        "/EleutherAI/gpt2-curt-clt-untied-layerwise-tokentopk": "--pre_ln_hook=True",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",

@@ -18,6 +18,7 @@ dependencies = [
     "huggingface-hub",
     "natsort", # For sorting module names
     "pre-commit>=4.2.0",
+    "rich>=14.0.0",
     "safetensors",
     "schedulefree",
     "simple-parsing",
