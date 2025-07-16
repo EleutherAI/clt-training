@@ -3,67 +3,84 @@ set -e
 PORT=$RANDOM
 PORT=$((PORT + 1000))
 
-BS=$1
-LR=$2
+CFG=$1
+K=$2
+EF=$3
+BS=$4
+LR=$5
+
+if [ -z "$BS" ]; then
+    BS=8
+else
+    BS=$BS
+fi
+if [ -z "$LR" ]; then
+    LR=2e-4
+else
+    LR=$LR
+fi
+
 NAME=bs${BS}-lr$LR
 SKIP="--skip_connection=True"
 SCALING="--post_encoder_scale=True"
-if [ -z "$3" ]; then
+if [ -z "$CFG" ]; then
     CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
 else
-    if [ "$3" == "none" ]; then
+    if [ "$CFG" == "none" ]; then
         CROSSING=""
-    elif [ "$3" == "btopk" ]; then
+    elif [ "$CFG" == "no-affine" ]; then
+        CROSSING="--train_post_encoder=False" SCALING=""
+    elif [ "$CFG" == "btopk" ]; then
         CROSSING="--activation=batchtopk"
-    elif [ "$3" == "btopk-noskip" ]; then
+    elif [ "$CFG" == "btopk-noskip" ]; then
         CROSSING="--activation=batchtopk --train_post_encoder=False" SCALING="" SKIP=""
-    elif [ "$3" == "btopk-tied" ]; then
+    elif [ "$CFG" == "btopk-tied" ]; then
         CROSSING="--activation=batchtopk --cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
-    elif [ "$3" == "nonskip" ]; then
+    elif [ "$CFG" == "nonskip" ]; then
         CROSSING="" SKIP=""
-    elif [ "$3" == "nonskip-no-affine" ]; then
+    elif [ "$CFG" == "nonskip-no-affine" ]; then
         CROSSING="--train_post_encoder=False" SCALING="" SKIP=""
-    elif [ "$3" == "nonskip-tied" ]; then
+    elif [ "$CFG" == "nonskip-tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False" SKIP=""
-    elif [ "$3" == "nonskip-tied-no-affine" ]; then
-        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
-    elif [ "$3" == "tied" ]; then
+    elif [ "$CFG" == "tied" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False"
-    elif [ "$3" == "source-tied" ]; then
+    elif [ "$CFG" == "source-tied" ]; then
         CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False"
-    elif [ "$3" == "source-tied-no-affine" ]; then
+    elif [ "$CFG" == "source-tied-no-affine" ]; then
         CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
-    elif [ "$3" == "source-tied-no-scale" ]; then
+    elif [ "$CFG" == "source-tied-no-scale" ]; then
         CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False" SCALING="" SKIP=""
-    elif [ "$3" == "source-target-tied" ]; then
+    elif [ "$CFG" == "source-target-tied" ]; then
         CROSSING="--cross_layer=12 --per_source_tied=True --secondary_target_tied=True --topk_coalesced=False"
-    elif [ "$3" == "source-tied-no-affine" ]; then
+    elif [ "$CFG" == "source-tied-no-affine" ]; then
         CROSSING="--cross_layer=12 --per_source_tied=True --topk_coalesced=False --train_post_encoder=False" SCALING=""
-    elif [ "$3" == "tied-no-affine" ]; then
+    elif [ "$CFG" == "tied-no-affine" ]; then
         CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING=""
-    elif [ "$3" == "cross" ]; then
+    elif [ "$CFG" == "nonskip-tied-no-affine" ]; then
+        CROSSING="--cross_layer=12 --coalesce_topk=concat --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
+    elif [ "$CFG" == "cross" ]; then
         # CROSSING="--cross_layer=12 --coalesce_topk=per-layer --topk_coalesced=False"
         # CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False"
         CROSSING="--cross_layer=12 --divide_cross_layer=True"
         # CROSSING="--cross_layer=12"
-    elif [ "$3" == "clt-noskip" ]; then
+    elif [ "$CFG" == "clt-noskip" ]; then
         CROSSING="--cross_layer=12 --divide_cross_layer=True --coalesce_topk=per-layer --topk_coalesced=False --train_post_encoder=False" SCALING="" SKIP=""
     else
         echo "Invalid option: $3"
         exit 1
     fi
-    NAME=${NAME}-$3
+    NAME=${NAME}-$CFG
 fi
-if [ -z "$4" ]; then
+if [ -z "$EF" ]; then
     EF=128
 else
-    EF=$4
+    EF=$EF
 fi
 NAME=${NAME}-ef$EF
-if [ -z "$5" ]; then
+if [ -z "$K" ]; then
     K=16
 else
-    K=$5
+    K=$K
 fi
 NAME=${NAME}-k$K
 
@@ -104,7 +121,7 @@ N_DEVICES=$(( ($N_DEVICE_CHARS + 1) / 2 ))
 echo "Using $N_DEVICES devices"
 # WANDB_ENTITY=eleutherai uv run python -m sparsify \
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
-openai-community/gpt2 --ctx_len 128 --filter_bos=True \
+openai-community/gpt2 --ctx_len 128 --filter_bos=True --remove_first_token=True \
 --transcode=True $SKIP \
 --batch_size=$BS --expansion_factor=$EF --k=$K --tp=$N_DEVICES \
 --hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \

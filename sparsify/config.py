@@ -135,6 +135,9 @@ class TrainConfig(Serializable):
     filter_bos: bool = False
     """Filter out BOS tokens from the dataset for KL loss."""
 
+    remove_first_token: bool = False
+    """Remove the first token from each sequence."""
+
     remove_transcoded_modules: bool = False
     """Don't run modules that are replaced for transcoders with CE loss."""
 
@@ -170,12 +173,6 @@ class TrainConfig(Serializable):
     dead_feature_threshold: int = 10_000_000
     """Number of tokens after which a feature is considered dead."""
 
-    feature_link_l1: float = 0.0
-    """L1 regularization for pairs of random features in nodes."""
-
-    feature_link_batch: int = 4096
-    """Batch size for feature link L1 regularization."""
-
     hookpoints: list[str] = list_field()
     """List of hookpoints to train sparse coders on."""
 
@@ -198,9 +195,6 @@ class TrainConfig(Serializable):
     cross_layer: int = 0
     """How many layers ahead to train the sparse coder on.
     If 0, train only on the same layer."""
-
-    grad_scaler: bool = False
-    """Use a gradient scaler."""
 
     tp: int = 1
     """Number of tensor parallel ranks to use."""

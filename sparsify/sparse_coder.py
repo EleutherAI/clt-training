@@ -16,7 +16,7 @@ from torch.distributed.tensor.device_mesh import DeviceMesh
 
 from .config import SparseCoderConfig
 from .fused_encoder import NO_COMPILE, EncoderOutput, fused_encoder
-from .utils import barrier, decoder_impl, load_sharded, save_sharded
+from .utils import decoder_impl, load_sharded, save_sharded
 
 
 @dataclass
@@ -244,7 +244,12 @@ class MidDecoder:
                 e = e * loss_mask[..., None]
 
             # Used as a denominator for putting everything on a reasonable scale
-            total_variance = (y - y.mean(0)).pow(2).sum()
+            if loss_mask is None:
+                total_variance = (y - y.mean(0)).pow(2).sum()
+            else:
+                lm = loss_mask[..., None]
+                y_mean = (y * lm).sum(0) / lm.sum(0)
+                total_variance = (y - y_mean).pow(2).mul(lm).sum()
 
             l2_loss = e.pow(2).sum()
             fvu = l2_loss / total_variance
@@ -943,7 +948,6 @@ class SparseCoder(nn.Module):
         current_state_dict = self.state_dict()
 
         filename = str(Path(path) / "sae.safetensors")
-        barrier()
         if self.mesh is None:
             state_dict = load_file(
                 filename,
@@ -1008,8 +1012,6 @@ class SparseCoder(nn.Module):
         for k, v in items:
             state_dict[k] = v
         self.load_state_dict(state_dict, strict=strict)
-
-        barrier()
 
     def save_to_disk(self, path: Path | str):
         path = Path(path)

@@ -1,4 +1,3 @@
-
 #%%
 from transformers import AutoTokenizer
 import json
@@ -10,9 +9,10 @@ import subprocess
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
 # model_type = "llama-1b"
-# model_type = "gpt2"
-model_type = "gemma2-2b"
+model_type = "gpt2"
+# model_type = "gemma2-2b"
 judge_ctx = "j1"
+print(f"Running {model_type}")
 
 eval_data = json.load(open(f"data/{model_type}-eval-data/data.json"))
 tokenizer = AutoTokenizer.from_pretrained(eval_data["model_name"])
@@ -26,6 +26,23 @@ run_names = {
         "../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16",
         "bs32-lr2e-4-source-tied-ef128-k16-adam8",
         "bs32-lr2e-4-source-target-tied-ef128-k16-adam8",
+        "/EleutherAI/gpt2-curt-clt-untied_global_batchtopk_jumprelu",
+        "/EleutherAI/gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu",
+        "/EleutherAI/gpt2-curt-clt-untied-layerwise-tokentopk",
+        "bs32-lr2e-4-clt-noskip-ef34-k16-adam8-bf16",
+        "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp10-1b",
+        "/EleutherAI/gpt2-mntss-transcoder-relu-sp6-skip",
+        "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp8",
+
+        "bs8-lr2e-4-no-affine-ef128-k8",
+        "bs8-lr2e-4-no-affine-ef128-k16",
+        "bs8-lr2e-4-no-affine-ef128-k24",
+        "bs8-lr2e-4-no-affine-ef128-k32",
+
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k8",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k16",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k24",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k32",
     ],
     "gemma2-2b": [
         "gemma-mntss-no-skip",
@@ -39,13 +56,20 @@ run_names = {
         "mntss/skip-transcoder-Llama-3.2-1B-131k-nobos",
         "./checkpoints/llama-sweep/bs32_lr2e-4_none_ef64_k32",
         "./checkpoints/llama-sweep/bs16_lr2e-4_no-skip_ef64_k32",
+        "./checkpoints/llama-sweep/tied-pre_ef64_k32_bs32_lr2e-4",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp10",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp20",
     ]
 }[model_type]
 extra_args = {
     "gpt2": {
-        "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "--offload=True",
+        # "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8": "--offload=True",
+        "/EleutherAI/gpt2-curt-clt-untied_global_batchtopk_jumprelu": "--pre_ln_hook=True",
+        "/EleutherAI/gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu": "--pre_ln_hook=True",
+        "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp10-1b": "--pre_ln_hook=True",
+        "/EleutherAI/gpt2-mntss-transcoder-relu-sp6-skip": "--pre_ln_hook=True",
+        "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp8": "--pre_ln_hook=True",
+        "/EleutherAI/gpt2-curt-clt-untied-layerwise-tokentopk": "--pre_ln_hook=True",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
@@ -53,6 +77,7 @@ extra_args = {
         "gemmascope-transcoders-sparsify": "--post_ln_hook=True --offload=True",
     },
     "llama-1b": {
+        "./checkpoints/llama-sweep/tied-pre_ef64_k32_bs32_lr2e-4": "--pre_ln_hook=True",
         "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder": "--pre_ln_hook=True",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp10": "--pre_ln_hook=True",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp20": "--pre_ln_hook=True",
@@ -75,9 +100,16 @@ start_end_mutex = threading.Lock()
 wake_up_signal = threading.Condition(start_end_mutex)
 
 def judge_run(run_name, prompt, i):
+    prompt_text = tokenizer.decode(prompt[:-1], skip_special_tokens=True)
+    args = [f"scripts/judge-{script_name}", run_name, *extra_args.get(run_name, "").split()]
+    if model_type == "gpt2":
+        prompt_text = "<|endoftext|>" + prompt_text
+        args.append("--remove_prefix=1")
+
     with start_end_mutex:
         prompt_name = f"{judge_ctx}-{i}"
-        results_path = f"../results/{model_type}-eval/{prompt_name}-{model_type}/results.json"
+        model_name = run_name.replace("/", "_")
+        results_path = f"./results/{model_type}-eval/{model_name}/{prompt_name}-{model_type}/results.json"
         if os.path.exists(results_path):
             return
         while all(n_occupants[gpu] >= n_can_run_parallel for gpu in available_gpus):
@@ -89,8 +121,6 @@ def judge_run(run_name, prompt, i):
         # print(n_occupants)
 
     try:
-        args = [f"scripts/judge-{script_name}", run_name, *extra_args.get(run_name, "").split()]
-        prompt_text = tokenizer.decode(prompt, skip_special_tokens=True)
         pipes = subprocess.Popen(
             args,
             env=os.environ | dict(

@@ -157,59 +157,33 @@ class CrossLayerRunner(object):
             elif mid_out.sparse_coder.cfg.coalesce_topk == "per-layer":
          
                 output = 0
-                for i, layer_mid in enumerate(layer_mids):
-                    hookpoint = hookpoints[i]
-                    is_ours = hookpoint == module_name
-                    if not is_ours:
-                        continue
-                        
-  
-                    num_latents = layer_mid.sparse_coder.num_latents
-  
-                    
-                    if is_ours:
-                        best_indices_local = best_indices
-                        best_values_local = best_values
-                        
-                    else:
-                        best_indices_local = None
-                        best_values_local = None
-        
-                        
-                    new_mid_out = layer_mid.copy(
-                        indices=best_indices_local,
-                        activations=best_values_local,
+                num_latents = mid_out.sparse_coder.num_latents
+                best_indices_local = best_indices
+                best_values_local = best_values
+                new_mid_out = mid_out.copy(
+                    indices=best_indices_local,
+                    activations=best_values_local,
+                )
+                out = new_mid_out(
+                    y,
+                    index=0,
+                    add_post_enc=False,
+                    **kwargs,
+                )
+                if isinstance(out.latent_indices, DTensor):
+                    out = replace(
+                        out,
+                        latent_indices=local_map(
+                            lambda x: (x % num_latents) * (x // num_latents == i),
+                            out_placements=(out.latent_indices.placements,),
+                        )(out.latent_indices),
                     )
-                    out = new_mid_out(
-                        y,
-                        layer_mid.index - 1,
-                        add_post_enc=False,
-                        addition=(0 if hookpoint != module_name else output),
-                        no_extras=hookpoint != module_name,
-                        denormalize=hookpoint == module_name,
-                        **kwargs,
+                else:
+                    out = replace(
+                        out,
+                        latent_indices=(out.latent_indices % num_latents)
+                        * (out.latent_indices // num_latents == i),
                     )
-                    if hookpoint != module_name:
-                        output += out.sae_out
-                        
-                    else:
-                        
-                        if isinstance(out.latent_indices, DTensor):
-                            out = replace(
-                                out,
-                                latent_indices=local_map(
-                                    lambda x: (x % num_latents)
-                                    * (x // num_latents == i),
-                                    out_placements=(out.latent_indices.placements,),
-                                )(out.latent_indices),
-                            )
-                        else:
-                            out = replace(
-                                out,
-                                latent_indices=(out.latent_indices % num_latents)
-                                * (out.latent_indices // num_latents == i),
-                            )
-                      
             else:
                 raise ValueError("Not implemented")
 

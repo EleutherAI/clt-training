@@ -22,7 +22,6 @@ from transformers import PreTrainedModel, get_linear_schedule_with_warmup
 
 from .config import TrainConfig
 from .data import MemmapDataset
-from .kernels import dense_dense_cooout_matmul
 
 # from .nanogpt import Muon
 from .muon import Muon
@@ -31,7 +30,6 @@ from .sign_sgd import SignSGD
 from .sparse_coder import ForwardOutput, SparseCoder
 from .utils import (
     DISTRIBUTE_MODEL,
-    barrier,
     get_layer_list,
     load_sharded,
     resolve_widths,
@@ -150,15 +148,12 @@ class Trainer:
         assert isinstance(dataset, Sized)
         num_batches = len(dataset) // cfg.batch_size
 
-        barrier()
-
         match cfg.optimizer:
             case "adam" | "adam8":
                 from torch.optim import Adam
 
                 if cfg.optimizer == "adam8":
                     try:
-                        # from bitsandbytes.optim import Adam8bit as Adam
                         from torchao.optim import AdamW8bit as Adam
 
                         print("Using 8-bit Adam from torchao")
@@ -166,7 +161,7 @@ class Trainer:
                         print(
                             "torchao 8-bit Adam not available, using torch.optim.Adam"
                         )
-                        print("Run `pip install bitsandbytes` for less memory usage.")
+                        print("Run `pip install torchao` for less memory usage.")
 
                 pgs = [
                     dict(
@@ -217,7 +212,7 @@ class Trainer:
                     torch.optim.Adam(
                         [param for param in params if param not in muon_param_set],
                         lr=cfg.lr or 2e-3,
-                        betas=(cfg.beta1, cfg.beta2),
+                        betas=(cfg.b1, cfg.b2),
                     ),
                 ]
                 self.lr_schedulers = [
@@ -276,9 +271,6 @@ class Trainer:
         )
 
         self.model.eval()
-        # self.model.compile()
-
-        barrier()
 
     def load_state(self, path: str):
         """Load the trainer state from disk."""
@@ -386,8 +378,6 @@ class Trainer:
         self.model.requires_grad_(False)
         self.model.eval()
 
-        barrier()
-
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
 
         wandb = None
@@ -405,8 +395,6 @@ class Trainer:
                 print("Weights & Biases not available, skipping logging.")
                 print("Run `pip install -U wandb` if you want to use it.")
                 self.cfg.log_to_wandb = False
-
-        barrier()
 
         num_sae_params = sum(
             p.numel() for s in self.saes.values() for p in s.parameters()
@@ -453,7 +441,6 @@ class Trainer:
 
         # For logging purposes
         avg_auxk_loss = defaultdict(float)
-        avg_feature_link_l1 = defaultdict(float)
         avg_fvu = defaultdict(float)
         avg_multi_topk_fvu = defaultdict(float)
         fvu_losses = defaultdict(float)
@@ -489,7 +476,6 @@ class Trainer:
 
         cached_inputs = {}
         cached_outputs = {}
-        grad_scalers = {}
         runner = CrossLayerRunner()
 
         def record_inputs(module: nn.Module, inputs, outputs):
@@ -622,9 +608,7 @@ class Trainer:
                     if self.cfg.auxk_alpha > 0
                     else None
                 ),
-                loss_mask=(
-                    ~bos_mask_mesh if loss_fn == "fvu" and self.cfg.filter_bos else None
-                ),
+                loss_mask=(~bos_mask_mesh if loss_fn == "fvu" else None),
             )
             output = out.sae_out
 
@@ -666,55 +650,8 @@ class Trainer:
                 if self.cfg.auxk_alpha > 0:
                     avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
 
-                feature_link_l1 = 0.0
                 prev_modules = [mod for mod in runner.outputs.keys() if mod != name]
                 prev_modules = [self.saes[mod] for mod in prev_modules]
-                if self.cfg.feature_link_l1 > 0:
-                    for prev_module in prev_modules:
-                        dec_prev = prev_module.W_dec
-                        enc_curr = raw.encoder.weight
-                        if isinstance(dec_prev, DTensor):
-                            dec_prev = dec_prev.to_local()
-                        if isinstance(enc_curr, DTensor):
-                            enc_curr = enc_curr.to_local()
-                        device = enc_curr.device
-                        neuron1_indices = torch.randint(
-                            0,
-                            len(dec_prev),
-                            (self.cfg.feature_link_batch,),
-                            device=device,
-                        )
-                        neuron2_indices = torch.randint(
-                            0,
-                            len(enc_curr),
-                            (self.cfg.feature_link_batch,),
-                            device=device,
-                        )
-                        products_enc1 = dense_dense_cooout_matmul(
-                            dec_prev,
-                            enc_curr.mT,
-                            torch.stack([neuron1_indices, neuron2_indices]),
-                        ).float()
-                        dec1_norms = dec_prev.norm(dim=1)
-                        enc2_norms = enc_curr.norm(dim=1)
-                        feature_link_l1 += torch.abs(
-                            products_enc1
-                            / (
-                                dec1_norms[neuron1_indices]
-                                * enc2_norms[neuron2_indices]
-                            ).clamp(min=1e-6)
-                        ).mean() / len(prev_modules)
-                    if isinstance(feature_link_l1, Tensor):
-                        feature_link_l1 = self.maybe_all_reduce(
-                            feature_link_l1, "mean", axis=None
-                        )
-                        feature_link_l1 = DTensor.from_local(
-                            feature_link_l1, self.mesh, [Replicate(), Replicate()]
-                        )
-                    if isinstance(feature_link_l1, Tensor):
-                        avg_feature_link_l1[name] += float(
-                            feature_link_l1.detach() / denom
-                        )
 
                 if self.cfg.sae.multi_topk:
                     avg_multi_topk_fvu[name] += float(
@@ -724,13 +661,7 @@ class Trainer:
                     out.fvu
                     + self.cfg.auxk_alpha * out.auxk_loss
                     + out.multi_topk_fvu / 8
-                    + self.cfg.feature_link_l1 * feature_link_l1
                 ) / acc_steps
-
-                if self.cfg.grad_scaler:
-                    if name not in grad_scalers:
-                        grad_scalers[name] = torch.amp.GradScaler()
-                    loss = grad_scalers[name].scale(loss)
 
                 # Do a "local" backward pass if we're not training end-to-end
                 loss.backward()
@@ -741,6 +672,10 @@ class Trainer:
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
             bos_mask = x == self.model.config.bos_token_id
+            if not self.cfg.filter_bos:
+                bos_mask &= 0
+            if self.cfg.remove_first_token:
+                bos_mask[:, 0] = True
 
             runner.reset()
 
@@ -792,7 +727,6 @@ class Trainer:
             ]
             try:
                 with self.implicit_replication():
-                    barrier()
                     match self.cfg.loss_fn:
                         case "ce":
                             ce = self.model(x, labels=x).loss
@@ -852,11 +786,7 @@ class Trainer:
                         sae.remove_gradient_parallel_to_decoder_directions()
 
                 for name, optimizer in zip(self.saes.keys(), self.optimizers):
-                    if self.cfg.grad_scaler:
-                        grad_scalers[name].step(optimizer)
-                        grad_scalers[name].update()
-                    else:
-                        optimizer.step()
+                    optimizer.step()
                     optimizer.zero_grad()
 
                 for scheduler in self.lr_schedulers:
@@ -907,8 +837,6 @@ class Trainer:
 
                         if self.cfg.auxk_alpha > 0:
                             info[f"auxk/{name}"] = avg_auxk_loss[name]
-                        if self.cfg.feature_link_l1 > 0:
-                            info[f"feature_link_l1/{name}"] = avg_feature_link_l1[name]
                         if self.cfg.sae.multi_topk:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
@@ -921,7 +849,6 @@ class Trainer:
                 avg_auxk_loss.clear()
                 avg_fvu.clear()
                 avg_multi_topk_fvu.clear()
-                avg_feature_link_l1.clear()
                 avg_ce = 0.0
                 avg_kl = 0.0
                 avg_acc_top1 = 0.0
