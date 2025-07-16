@@ -5,7 +5,7 @@ from dataclasses import asdict, replace
 from fnmatch import fnmatchcase
 from functools import partial
 from glob import glob
-from typing import Sized, Optional, List
+from typing import Sized
 
 import torch
 import torch.distributed as dist
@@ -136,7 +136,7 @@ class Trainer:
                     n_targets=n_targets,
                     n_sources=n_sources,
                 )
-                
+
                 self.saes[name] = SparseCoder(
                     input_widths[hook],
                     sae_cfg,
@@ -453,6 +453,9 @@ class Trainer:
             else float("inf")
         )
 
+        # For Matryoshka metrics logging
+        matryoshka_metrics = defaultdict(dict)
+
         if self.cfg.loss_fn == "ce":
             batch = next(iter(dl))
             x = self.input_ids_to_mesh(batch["input_ids"])
@@ -594,7 +597,8 @@ class Trainer:
             if raw.cfg.normalize_decoder and not self.cfg.sae.transcode:
                 raw.set_decoder_norm_to_unit_norm()
 
-            # Always use CrossLayerRunner - Matryoshka logic is now handled in MatryoshkaMidDecoder
+            # Always use CrossLayerRunner
+            # Matryoshka logic is now handled in MatryoshkaMidDecoder
             current_runner = runner
 
             out = current_runner(
@@ -627,6 +631,13 @@ class Trainer:
                 latent_indices = latent_indices.to_local()
             did_fire[name][latent_indices] = True
             self.maybe_all_reduce(did_fire[name], "max")
+
+            # Collect Matryoshka metrics if available
+            if self.cfg.sae.matryoshka:
+                # Get the mid_decoder from the runner to access matryoshka_metrics
+                mid_decoder = runner.outputs.get(name)
+                if mid_decoder and hasattr(mid_decoder, "matryoshka_metrics"):
+                    matryoshka_metrics[name] = mid_decoder.matryoshka_metrics
 
             if loss_fn in ("ce", "kl"):
                 # reshard outputs
@@ -711,9 +722,7 @@ class Trainer:
                 )
 
             # Forward pass on the model to get the next batch of activations
-            # Choose the appropriate hook based on whether matryoshka is enabled
-            hook_function = hook
-            
+
             handles = [
                 mod.register_forward_hook(
                     partial(
@@ -840,6 +849,15 @@ class Trainer:
                         if self.cfg.sae.multi_topk:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
+                    # Add Matryoshka metrics to wandb logging
+                    if self.cfg.sae.matryoshka:
+                        for name, metrics in matryoshka_metrics.items():
+                            for metric_name, metric_value in metrics.items():
+                                # Skip non-scalar values like expansion_factors list
+                                if isinstance(metric_value, (int, float)):
+                                    metric_key = f"matryoshka/{name}/{metric_name}"
+                                    info[metric_key] = metric_value
+
                     if rank_zero:
                         info["k"] = self.get_current_k()
 
@@ -852,6 +870,7 @@ class Trainer:
                 avg_ce = 0.0
                 avg_kl = 0.0
                 avg_acc_top1 = 0.0
+                matryoshka_metrics.clear()
 
             self.global_step += 1
             pbar.update()

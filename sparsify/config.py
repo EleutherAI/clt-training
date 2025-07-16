@@ -88,10 +88,10 @@ class SparseCoderConfig(Serializable):
     """Whether to use Matryoshka-style training with multiple sizes."""
 
     matryoshka_expansion_factors: list[int] = list_field()
-    """List of expansion factors for different Matryoshka sizes. If empty, uses k_values."""
+    """Expansion factors for different Matryoshka sizes. Use k_values if empty."""
 
     matryoshka_k_values: list[int] = list_field()
-    """List of k values for different Matryoshka sizes. If empty, extrapolated from expansion_factors."""
+    """k values for different Matryoshka sizes. Use expansion_factors if empty."""
 
     @property
     def do_coalesce_topk(self):
