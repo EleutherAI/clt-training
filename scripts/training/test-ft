@@ -11,15 +11,17 @@ WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu
 openai-community/gpt2 --ctx_len 128 --filter_bos=True --remove_first_token=True \
 --transcode=True \
 --batch_size=32 \
---k=128 --tp=$N_DEVICES \
+--tp=$N_DEVICES \
 --hookpoints_in h.0.ln_2 h.1.ln_2 h.2.ln_2 h.3.ln_2 h.4.ln_2 h.5.ln_2 h.6.ln_2 h.7.ln_2 h.8.ln_2 h.9.ln_2 h.10.ln_2 h.11.ln_2 \
 --hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \
 --run_name curt-finetune \
---train_post_encoder=True --post_encoder_scale=False --topk_coalesced=False --normalize_io=False \
+--train_post_encoder=False --post_encoder_scale=False --topk_coalesced=False --normalize_io=False \
 --lr 1e-4 \
 --optimizer adam --lr_warmup_steps 50 \
 --save_every 100000 \
---cross_layer=12 --num_latents=122880 --skip_connection=True --coalesce_topk=concat --finetune ../attribution_graph/results/gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu \
-# --num_latents=131072 --skip_connection=True  --finetune ../attribution_graph/results/gpt2-mntss-transcoder-relu-sp6-skip \
-# --cross_layer=12 --num_latents=32768 --skip_connection=False --coalesce_topk=per-layer --finetune ../attribution_graph/results/gpt2-mntss-transcoder-clt-relu-sp10-1b \
-# --cross_layer=12 --num_latents=32768 --skip_connection=False --coalesce_topk=per-layer --finetune ../attribution_graph/results/gpt2-curt-clt-untied_global_batchtopk_jumprelu
+--k=16 --cross_layer=12 --num_latents=32768 --coalesce_topk=per-layer --finetune ../attribution_graph/results/gpt2-curt-clt-untied-layerwise-tokentopk \
+# --k=128 --cross_layer=12 --num_latents=32768 --skip_connection=True --coalesce_topk=per-layer --finetune ../attribution_graph/results/gpt2-curt-clt-untied_layerwise_batchtopk_jumprelu \
+# --k=128 --cross_layer=12 --num_latents=122880 --skip_connection=True --coalesce_topk=concat --finetune ../attribution_graph/results/gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu \
+# --k=128 --num_latents=131072 --skip_connection=True  --finetune ../attribution_graph/results/gpt2-mntss-transcoder-relu-sp6-skip \
+# --k=128 --cross_layer=12 --num_latents=32768 --skip_connection=False --coalesce_topk=per-layer --finetune ../attribution_graph/results/gpt2-mntss-transcoder-clt-relu-sp10-1b \
+# --k=128 --cross_layer=12 --num_latents=32768 --skip_connection=False --coalesce_topk=per-layer --finetune ../attribution_graph/results/gpt2-curt-clt-untied_global_batchtopk_jumprelu

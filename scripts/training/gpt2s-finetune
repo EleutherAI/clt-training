@@ -2,15 +2,20 @@
 set -e
 PORT=$RANDOM
 PORT=$((PORT + 1000))
+N_DEVICE_CHARS=${#CUDA_VISIBLE_DEVICES}
+N_DEVICES=$(( ($N_DEVICE_CHARS + 1) / 2 ))
+echo "Using $N_DEVICES devices"
+if [ -z "$2" ]; then
+    lr=3e-5
+else
+    lr=$2
+fi
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
-openai-community/gpt2 --ctx_len 128 --filter_bos=True \
+openai-community/gpt2 --ctx_len 128 --filter_bos=True --remove_first_token=True \
 --transcode=True --skip_connection=True \
---batch_size=8 --expansion_factor=128 --tp=2 --k=16 \
+--batch_size=4 --expansion_factor=128 --tp=$N_DEVICES --k=16 \
 --hookpoints h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp \
---run_name clt-gpt2-finetune/$1 --finetune checkpoints/gpt2-sweep/$1 ${@:2} \
---lr 5e-5 --optimizer adam --lr_warmup_steps 50 \
---normalize_io=True --post_encoder_scale=True \
+--run_name clt-gpt2-finetune/$1-$lr --finetune checkpoints/gpt2-sweep/$1 ${@:3} \
+--lr $lr --optimizer adam --lr_warmup_steps 50 \
+--normalize_io=True --train_post_encoder=False \
 --loss_fn kl-fvu --kl_coeff 0.0 \
-# --b1 0.9
-# --coalesce_topk=concat --topk_coalesced=False --post_encoder_scale=True --normalize_io=True --cross_layer=12 \
-# --loss_fn kl \

@@ -24,6 +24,7 @@ run_names = {
         "bs8-lr2e-4-none-ef128-k16",
         "bs16-lr2e-4-btopk-clt-noskip-ef128-k16-adam8",
         "../clt-gpt2-finetune/bs8-lr2e-4-none-ef128-k16",
+        "../clt-gpt2-finetune/bs8-lr2e-4-no-affine-ef128-k16",
         "bs32-lr2e-4-source-tied-ef128-k16-adam8",
         "bs32-lr2e-4-source-target-tied-ef128-k16-adam8",
         "/EleutherAI/gpt2-curt-clt-untied_global_batchtopk_jumprelu",
@@ -33,6 +34,7 @@ run_names = {
         "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp10-1b",
         "/EleutherAI/gpt2-mntss-transcoder-relu-sp6-skip",
         "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp8",
+        "/EleutherAI/gpt2-curt-clt-untied_layerwise_batchtopk_jumprelu",
 
         "bs8-lr2e-4-no-affine-ef128-k8",
         "bs8-lr2e-4-no-affine-ef128-k16",
@@ -43,6 +45,10 @@ run_names = {
         "bs8-lr2e-4-nonskip-no-affine-ef128-k16",
         "bs8-lr2e-4-nonskip-no-affine-ef128-k24",
         "bs8-lr2e-4-nonskip-no-affine-ef128-k32",
+
+        "bs8-lr2e-4-tied-no-affine-ef128-k16",
+
+        "bs8-lr2e-4-clt-noskip-ef128-k16"
     ],
     "gemma2-2b": [
         "gemma-mntss-no-skip",
@@ -70,6 +76,7 @@ extra_args = {
         "/EleutherAI/gpt2-mntss-transcoder-relu-sp6-skip": "--pre_ln_hook=True",
         "/EleutherAI/gpt2-mntss-transcoder-clt-relu-sp8": "--pre_ln_hook=True",
         "/EleutherAI/gpt2-curt-clt-untied-layerwise-tokentopk": "--pre_ln_hook=True",
+        "/EleutherAI/gpt2-curt-clt-untied_layerwise_batchtopk_jumprelu": "--pre_ln_hook=True",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "--pre_ln_hook=True --post_ln_hook=True --offload=True",
@@ -88,7 +95,7 @@ script_name = {
     "gemma2-2b": "gemma",
     "llama-1b": "llama",
 }[model_type]
-available_gpus = [0, 1, 2, 3, 4, 5]
+available_gpus = list(range(8)) if "CUDA_VISIBLE_DEVICES" not in os.environ else [int(gpu) for gpu in os.environ["CUDA_VISIBLE_DEVICES"].split(",")]
 n_can_run_parallel = {
     "gpt2": 1,
     "gemma2-2b": 1,

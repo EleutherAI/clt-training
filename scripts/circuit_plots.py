@@ -27,6 +27,9 @@ judge_ctx = "j1"
 run_names = {
     "gpt2": {
         ".._clt-gpt2-finetune_bs8-lr2e-4-none-ef128-k16": "FT PLT, no skip",
+        ".._clt-gpt2-finetune_bs8-lr2e-4-no-affine-ef128-k16": "FT NA, skip",
+        "bs8-lr2e-4-no-affine-ef128-k16": "NA skip, k=16",
+        "bs8-lr2e-4-clt-noskip-ef128-k16": "CLT, no skip, long",
         "bs8-lr2e-4-none-ef128-k16": "PLT, skip",
         "bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16": "PLT, no skip",
         "bs16-lr2e-4-nonskip-tied-no-affine-ef128-k16-adam8-bf16": "Tied CLT, no skip",
@@ -41,6 +44,7 @@ run_names = {
         "_EleutherAI_gpt2-curt-clt-untied_global_batchtopk_jumprelu": "Curt CLT",
         "_EleutherAI_gpt2-curt-clt-tied_per_target_skip_global_batchtopk_jumprelu": "Curt TCLT",
         "_EleutherAI_gpt2-curt-clt-untied-layerwise-tokentopk": "Curt LW CLT",
+        "_EleutherAI_gpt2-curt-clt-untied_layerwise_batchtopk_jumprelu": "Curt LW BTK CLT",
 
         # "bs8-lr2e-4-no-affine-ef128-k8": "NA skip, k=8",
         # "bs8-lr2e-4-no-affine-ef128-k16": "NA skip, k=16",
@@ -48,9 +52,11 @@ run_names = {
         # "bs8-lr2e-4-no-affine-ef128-k32": "NA skip, k=32",
 
         # "bs8-lr2e-4-nonskip-no-affine-ef128-k8": "NA, k=8",
-        # "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
         # "bs8-lr2e-4-nonskip-no-affine-ef128-k24": "NA, k=24",
         # "bs8-lr2e-4-nonskip-no-affine-ef128-k32": "NA, k=32",
+
+        "bs8-lr2e-4-tied-no-affine-ef128-k16": "NA tied, k=16",
     },
     "gemma2-2b": {
         "gemma-mntss-no-skip": "PLT, no skip",
@@ -69,9 +75,9 @@ run_names = {
         "EleutherAI_Llama-3.2-1B-mntss-transcoder-no-skip-sp20": "PLT, no skip, sp20",
     }
 }[model_type]
-# metric = "replacement_score_unpruned"
+metric = "replacement_score_unpruned"
 # metric = "sweep_pruning_results.100.replacement_score"
-metric = "errors.2"
+# metric = "errors.2"
 # metric = "sweep_pruning_results.100.completeness_score"
 # metric = "completeness_score_unpruned"
 results = defaultdict(dict)
@@ -95,7 +101,7 @@ for res_set in result_sets.values():
 results = {k: [v[k2] for k2 in result_set] for k, v in results.items()}
 
 result_mean_std = {k: (np.mean(v), np.std(v)) for k, v in results.items()}
-plt.figure(figsize=(20, 10))
+plt.figure(figsize=(30, 10))
 all_results = []
 for run_name_str, results_list in results.items():
     all_results.extend([
