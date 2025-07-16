@@ -648,11 +648,12 @@ class Trainer:
                 else:
                     print("  - No matryoshka_metrics found")
                     if mid_decoder:
-                        print(
-                            "  - Available attributes: "
-                            f"{[attr for attr in dir(mid_decoder)
-                            if not attr.startswith('_')]}"
-                        )
+                        attrs = [
+                            attr
+                            for attr in dir(mid_decoder)
+                            if not attr.startswith("_")
+                        ]
+                        print(f"  - Available attributes: {attrs}")
 
             if loss_fn in ("ce", "kl"):
                 # reshard outputs
