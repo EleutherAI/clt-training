@@ -623,21 +623,7 @@ class MatryoshkaMidDecoder(MidDecoder):
             print(f"Total weighted Multi-TopK: {total_multi_topk_fvu.item():.6f}")
             print(f"Total loss (sum): {total_fvu.item() + total_auxk_loss.item() + total_multi_topk_fvu.item():.6f}")
             
-            # Compare with main encoding
-            if isinstance(main_acts, torch.Tensor):
-                main_sae_out = self.sparse_coder.decode(main_acts, main_indices, index)
-                if hasattr(self.sparse_coder, 'W_skip') and self.sparse_coder.W_skip is not None:
-                    main_sae_out += self.x.to(self.sparse_coder.dtype) @ self.sparse_coder.W_skip.mT
-                main_sae_out = self.sparse_coder.denormalize_output(main_sae_out)
-                main_e = y - main_sae_out
-                main_total_variance = (y - y.mean(0)).pow(2).sum()
-                main_fvu = main_e.pow(2).sum() / main_total_variance
-                print(f"\nCOMPARISON WITH MAIN ENCODING:")
-                print(f"  Main encoding FVU: {main_fvu.item():.6f}")
-                print(f"  Matryoshka total FVU: {total_fvu.item():.6f}")
-                print(f"  Difference: {total_fvu.item() - main_fvu.item():.6f}")
-            else:
-                print(f"\nCOMPARISON WITH MAIN ENCODING: main_acts is not a tensor")
+
             
             print(f"{'='*80}\n")
 
