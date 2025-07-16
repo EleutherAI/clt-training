@@ -634,26 +634,15 @@ class Trainer:
 
             # Collect Matryoshka metrics if available (BEFORE restore)
             if self.cfg.sae.matryoshka:
-                # Get the mid_decoder from the runner to access matryoshka_metrics
-                mid_decoder = runner.outputs.get(name)
-                print(f"MATRYOSHKA DEBUG: Checking {name}")
-                print(f"  - mid_decoder in runner.outputs: {mid_decoder}")
-                print(f"  - type: {type(mid_decoder) if mid_decoder else 'None'}")
-                if mid_decoder and hasattr(mid_decoder, "matryoshka_metrics"):
-                    matryoshka_metrics[name] = mid_decoder.matryoshka_metrics
-                    print(
-                        f"  - Found matryoshka_metrics: "
-                        f"{len(mid_decoder.matryoshka_metrics)} items"
-                    )
+                # The metrics should be available in the returned ForwardOutput
+                # since the __call__ method was just executed
+                if hasattr(out, "matryoshka_metrics"):
+                    matryoshka_metrics[name] = out.matryoshka_metrics
+                    print(f"MATRYOSHKA: Found metrics for {name}")
                 else:
-                    print("  - No matryoshka_metrics found")
-                    if mid_decoder:
-                        attrs = [
-                            attr
-                            for attr in dir(mid_decoder)
-                            if not attr.startswith("_")
-                        ]
-                        print(f"  - Available attributes: {attrs}")
+                    print(f"MATRYOSHKA: No metrics in ForwardOutput for {name}")
+                    attrs = [attr for attr in dir(out) if not attr.startswith("_")]
+                    print(f"  - ForwardOutput attributes: {attrs}")
 
             if loss_fn in ("ce", "kl"):
                 # reshard outputs

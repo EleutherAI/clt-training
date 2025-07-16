@@ -41,6 +41,9 @@ class ForwardOutput:
     is_last: bool = False
     """Whether this is the last target in a multi-target setup."""
 
+    matryoshka_metrics: Optional[dict] = None
+    """Matryoshka metrics, if applicable."""
+
 
 class MidDecoder:
     def __init__(
@@ -508,6 +511,7 @@ class MatryoshkaMidDecoder(MidDecoder):
                 sae_out.new_tensor(0.0),
                 sae_out.new_tensor(0.0),
                 is_last,
+                matryoshka_metrics=None,
             )
         else:
             # MATRYOSHKA LOSS COMPUTATION - DIFFERENT FROM MidDecoder
@@ -679,6 +683,7 @@ class MatryoshkaMidDecoder(MidDecoder):
             total_auxk_loss,
             total_multi_topk_fvu,
             is_last,
+            matryoshka_metrics=matryoshka_metrics,
         )
 
 
