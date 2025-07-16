@@ -636,19 +636,23 @@ class Trainer:
             if self.cfg.sae.matryoshka:
                 # Get the mid_decoder from the runner to access matryoshka_metrics
                 mid_decoder = runner.outputs.get(name)
+                print(f"MATRYOSHKA DEBUG: Checking {name}")
+                print(f"  - mid_decoder in runner.outputs: {mid_decoder}")
+                print(f"  - type: {type(mid_decoder) if mid_decoder else 'None'}")
                 if mid_decoder and hasattr(mid_decoder, "matryoshka_metrics"):
                     matryoshka_metrics[name] = mid_decoder.matryoshka_metrics
-                    print(f"MATRYOSHKA: Collected metrics for {name}")
+                    print(
+                        f"  - Found matryoshka_metrics: "
+                        f"{len(mid_decoder.matryoshka_metrics)} items"
+                    )
                 else:
-                    print(f"MATRYOSHKA: No metrics found for {name}")
+                    print("  - No matryoshka_metrics found")
                     if mid_decoder:
-                        print(f"  - mid_decoder type: {type(mid_decoder)}")
                         print(
-                            f"  - has matryoshka_metrics: "
-                            f"{hasattr(mid_decoder, 'matryoshka_metrics')}"
+                            "  - Available attributes: "
+                            f"{[attr for attr in dir(mid_decoder)
+                            if not attr.startswith('_')]}"
                         )
-                    else:
-                        print("  - mid_decoder is None")
 
             if loss_fn in ("ce", "kl"):
                 # reshard outputs

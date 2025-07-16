@@ -99,6 +99,10 @@ class MidDecoder:
         if hasattr(self, "original_activations"):
             new_mid.original_activations = self.original_activations
 
+        # Copy Matryoshka metrics if they exist
+        if hasattr(self, "matryoshka_metrics"):
+            new_mid.matryoshka_metrics = self.matryoshka_metrics
+
         return new_mid
 
     def detach(self):
@@ -666,9 +670,6 @@ class MatryoshkaMidDecoder(MidDecoder):
 
             # Store metrics for wandb logging (will be accessed by trainer)
             self.matryoshka_metrics = matryoshka_metrics
-            print(f"MATRYOSHKA: Stored metrics for {self.sparse_coder}")
-            print(f"  - Number of metrics: {len(matryoshka_metrics)}")
-            print(f"  - Sample metrics: {list(matryoshka_metrics.keys())[:5]}")
 
         return ForwardOutput(
             sae_out,
