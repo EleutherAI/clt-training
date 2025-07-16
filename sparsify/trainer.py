@@ -632,12 +632,23 @@ class Trainer:
             did_fire[name][latent_indices] = True
             self.maybe_all_reduce(did_fire[name], "max")
 
-            # Collect Matryoshka metrics if available
+            # Collect Matryoshka metrics if available (BEFORE restore)
             if self.cfg.sae.matryoshka:
                 # Get the mid_decoder from the runner to access matryoshka_metrics
                 mid_decoder = runner.outputs.get(name)
                 if mid_decoder and hasattr(mid_decoder, "matryoshka_metrics"):
                     matryoshka_metrics[name] = mid_decoder.matryoshka_metrics
+                    print(f"MATRYOSHKA: Collected metrics for {name}")
+                else:
+                    print(f"MATRYOSHKA: No metrics found for {name}")
+                    if mid_decoder:
+                        print(f"  - mid_decoder type: {type(mid_decoder)}")
+                        print(
+                            f"  - has matryoshka_metrics: "
+                            f"{hasattr(mid_decoder, 'matryoshka_metrics')}"
+                        )
+                    else:
+                        print("  - mid_decoder is None")
 
             if loss_fn in ("ce", "kl"):
                 # reshard outputs
