@@ -638,11 +638,6 @@ class Trainer:
                 # since the __call__ method was just executed
                 if hasattr(out, "matryoshka_metrics"):
                     matryoshka_metrics[name] = out.matryoshka_metrics
-                    print(f"MATRYOSHKA: Found metrics for {name}")
-                else:
-                    print(f"MATRYOSHKA: No metrics in ForwardOutput for {name}")
-                    attrs = [attr for attr in dir(out) if not attr.startswith("_")]
-                    print(f"  - ForwardOutput attributes: {attrs}")
 
             if loss_fn in ("ce", "kl"):
                 # reshard outputs

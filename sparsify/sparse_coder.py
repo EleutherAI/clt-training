@@ -1168,7 +1168,6 @@ class SparseCoder(nn.Module):
                 )
             else:
                 # Use regular MidDecoder
-                print(" USING REGULAR MIDDECODER")
                 mid_decoder = MidDecoder(
                     self, x, top_acts, top_indices, pre_acts, dead_mask
                 )
