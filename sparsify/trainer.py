@@ -347,7 +347,10 @@ class Trainer:
             optimizer.load_state_dict(opt_state)
 
         for name, sae in self.saes.items():
-            sae.load_state(f"{path}/{name}")
+            if os.path.exists(f"{path}/{name}"):
+                sae.load_state(f"{path}/{name}")
+            else:
+                print(f"No checkpoint found for {name} at {path}, skipping")
 
     def get_current_k(self) -> int:
         """Get the current k value based on a linear decay schedule."""
