@@ -8,8 +8,8 @@ import subprocess
 
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
 
-# model_type = "llama-1b"
-model_type = "gpt2"
+model_type = "llama-1b"
+# model_type = "gpt2"
 # model_type = "gemma2-2b"
 judge_ctx = "j1"
 print(f"Running {model_type}")
@@ -60,9 +60,10 @@ run_names = {
         "EleutherAI/llama1b-clt-tied-ef64-k16",
         "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder",
         "mntss/skip-transcoder-Llama-3.2-1B-131k-nobos",
-        "./checkpoints/llama-sweep/bs32_lr2e-4_none_ef64_k32",
-        "./checkpoints/llama-sweep/bs16_lr2e-4_no-skip_ef64_k32",
-        "./checkpoints/llama-sweep/tied-pre_ef64_k32_bs32_lr2e-4",
+        "./checkpoints/llama-sweep/none-pre_ef64_k16_bs8_lr2e-4",
+        # "./checkpoints/llama-sweep/bs32_lr2e-4_none_ef64_k32",
+        # "./checkpoints/llama-sweep/bs16_lr2e-4_no-skip_ef64_k32",
+        # "./checkpoints/llama-sweep/tied-pre_ef64_k32_bs32_lr2e-4",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp10",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp20",
     ]
@@ -85,6 +86,7 @@ extra_args = {
     },
     "llama-1b": {
         "./checkpoints/llama-sweep/tied-pre_ef64_k32_bs32_lr2e-4": "--pre_ln_hook=True",
+        "./checkpoints/llama-sweep/none-pre_ef64_k16_bs8_lr2e-4": "--pre_ln_hook=True",
         "EleutherAI/Llama-3.2-1B-mntss-skip-transcoder": "--pre_ln_hook=True",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp10": "--pre_ln_hook=True",
         "EleutherAI/Llama-3.2-1B-mntss-transcoder-no-skip-sp20": "--pre_ln_hook=True",

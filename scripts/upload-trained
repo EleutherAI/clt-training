@@ -12,4 +12,4 @@ if [ -z "$branch" ]; then
 fi
 repo_id="EleutherAI/$target_name"
 huggingface-cli upload $repo_id scripts/null nothing --revision $branch
-huggingface-cli upload-large-folder $repo_id checkpoints/$source_name --repo-type model --revision $branch
+huggingface-cli upload-large-folder $repo_id checkpoints/$source_name --repo-type model --revision $branch --exclude 'optimizer_*.pt'

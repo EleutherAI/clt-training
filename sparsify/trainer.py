@@ -621,7 +621,12 @@ class Trainer:
                 fvu_losses[name] = float(out.fvu.detach())
 
             # Update the did_fire mask
-            latent_indices = out.latent_indices.flatten()
+            # latent_indices = out.latent_indices.flatten()
+            try:
+                latent_indices = runner.outputs[name].latent_indices.flatten()
+            except KeyError:
+                latent_indices = out.latent_indices.flatten()
+
             if isinstance(latent_indices, DTensor):
                 latent_indices = latent_indices.to_local()
             did_fire[name][latent_indices] = True

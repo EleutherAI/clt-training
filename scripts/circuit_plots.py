@@ -9,9 +9,9 @@ import pandas as pd
 import os
 sns.set_theme()
 os.chdir(os.path.dirname(os.path.dirname(__file__)))
-model_type = "gpt2"
+# model_type = "gpt2"
 # model_type = "gemma2-2b"
-# model_type = "llama-1b"
+model_type = "llama-1b"
 eval_path = Path(f"results/{model_type}-eval/")
 model_name = {
     "gpt2": "GPT2",
@@ -29,6 +29,7 @@ run_names = {
         ".._clt-gpt2-finetune_bs8-lr2e-4-none-ef128-k16": "FT PLT, no skip",
         ".._clt-gpt2-finetune_bs8-lr2e-4-no-affine-ef128-k16": "FT NA, skip",
         "bs8-lr2e-4-no-affine-ef128-k16": "NA skip, k=16",
+        "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
         "bs8-lr2e-4-clt-noskip-ef128-k16": "CLT, no skip, long",
         "bs8-lr2e-4-none-ef128-k16": "PLT, skip",
         "bs16-lr2e-4-nonskip-ef128-k16-adam8-bf16": "PLT, no skip",
@@ -52,7 +53,7 @@ run_names = {
         # "bs8-lr2e-4-no-affine-ef128-k32": "NA skip, k=32",
 
         # "bs8-lr2e-4-nonskip-no-affine-ef128-k8": "NA, k=8",
-        "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
+        # "bs8-lr2e-4-nonskip-no-affine-ef128-k16": "NA, k=16",
         # "bs8-lr2e-4-nonskip-no-affine-ef128-k24": "NA, k=24",
         # "bs8-lr2e-4-nonskip-no-affine-ef128-k32": "NA, k=32",
 
@@ -69,6 +70,7 @@ run_names = {
         "._checkpoints_llama-sweep_bs32_lr2e-4_none_ef64_k32": "PLT, skip, k=32",
         "._checkpoints_llama-sweep_bs16_lr2e-4_no-skip_ef64_k32": "PLT, no skip, k=32",
         "._checkpoints_llama-sweep_tied-pre_ef64_k32_bs32_lr2e-4": "Pre- Tied CLT",
+        "._checkpoints_llama-sweep_none-pre_ef64_k16_bs8_lr2e-4": "PLT, skip, k=16",
         "EleutherAI_Llama-3.2-1B-mntss-skip-transcoder": "PLT, skip, ReLU",
         "mntss_skip-transcoder-Llama-3.2-1B-131k-nobos": "PLT, skip, TopK",
         "EleutherAI_Llama-3.2-1B-mntss-transcoder-no-skip-sp10": "PLT, no skip, sp10",
