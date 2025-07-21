@@ -163,6 +163,9 @@ class TrainConfig(Serializable):
     dead_feature_threshold: int = 10_000_000
     """Number of tokens after which a feature is considered dead."""
 
+    dead_latent_penalty: float = 0.0
+    """Regularization penalty for dead latents."""
+
     hookpoints: list[str] = list_field()
     """List of hookpoints to train sparse coders on."""
 

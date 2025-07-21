@@ -421,3 +421,62 @@ def fused_encoder(
     return EncoderOutput(
         *FusedEncoder.apply(input, weight, bias, k, activation, use_fp8)  # type: ignore
     )
+
+
+class DeadLatentLoss(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, inputs, weight, bias, loss_weight):
+        ctx.save_for_backward(inputs, weight, bias, loss_weight)
+        return inputs.new_tensor(0.0)
+
+    @torch.autocast(
+        "cuda",
+        dtype=torch.bfloat16,
+        enabled=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+    )
+    @staticmethod
+    def backward(ctx, grad):
+        inputs, weight, bias, loss_weight_mul = ctx.saved_tensors
+        was_dtensor = False
+        lwmul_was_dtensor = isinstance(loss_weight_mul, dtensor.DTensor)
+        if isinstance(weight, dtensor.DTensor):
+            was_dtensor = True
+            mesh = weight.device_mesh
+            placements = weight.placements
+            if not lwmul_was_dtensor:
+                loss_weight_mul = dtensor.DTensor.from_local(
+                    loss_weight_mul, mesh, (dtensor.Replicate(), dtensor.Replicate())
+                )
+            loss_weight_mul = loss_weight_mul.redistribute(mesh, placements)
+        inputs, weight, bias, loss_weight_mul, grad = (
+            inputs.to_local(),
+            weight.to_local(),
+            bias.to_local(),
+            loss_weight_mul.to_local(),
+            grad.to_local(),
+        )
+        loss_weight = grad * loss_weight_mul
+        grad_weight = None
+        grad_bias = None
+        if ctx.needs_input_grad[1]:
+            grad_weight = -torch.einsum("...x,yx,y->yx", inputs, weight, loss_weight)
+            if was_dtensor:
+                grad_weight = dtensor.DTensor.from_local(grad_weight, mesh, placements)
+        grad_bias = None
+        if ctx.needs_input_grad[2]:
+            grad_bias = -loss_weight.broadcast_to(bias.shape)
+            if was_dtensor:
+                grad_bias = dtensor.DTensor.from_local(grad_bias, mesh, placements)
+        grad_weight_mul = None
+        if ctx.needs_input_grad[3]:
+            grad_weight_mul = -torch.einsum("...x,yx,->y", inputs, weight, grad)
+            if was_dtensor:
+                grad_weight_mul = dtensor.DTensor.from_local(
+                    grad_weight_mul, mesh, placements
+                )
+                grad_weight_mul = grad_weight_mul.redistribute(
+                    mesh, (dtensor.Replicate(), dtensor.Replicate())
+                )
+            if not lwmul_was_dtensor:
+                grad_weight_mul = grad_weight_mul.to_local()
+        return None, grad_weight, grad_bias, grad_weight_mul
