@@ -107,8 +107,10 @@ fi
 
 if ! [ -z "$RESUME" ]; then
     RESUME="--resume"
-    # RESUME="--finetune checkpoints/gpt2-sweep/$NAME$name"
-    SAVE_ARGS=""
+fi
+
+if ! [ -z "$FINETUNE" ]; then
+    FINETUNE="--finetune checkpoints/gpt2-sweep/$NAME$name"
 fi
 
 if ! [ -z "$BF16" ]; then
@@ -131,5 +133,5 @@ $CROSSING \
 $SCALING --normalize_io=True \
 $SAVE_ARGS --lr $LR \
 --optimizer $OPTIMIZER --lr_warmup_steps 50 $extra \
-$RESUME
+$RESUME $FINETUNE
 # --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/

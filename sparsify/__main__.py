@@ -219,7 +219,7 @@ def run():
 
         trainer = Trainer(args, dataset, model, mesh)
         if args.resume:
-            trainer.load_state(f"checkpoints/{args.run_name}" or "checkpoints/unnamed")
+            trainer.load_state(f"checkpoints/{args.run_name}")
         elif args.finetune:
             for name, sae in trainer.saes.items():
                 if not os.path.exists(f"{args.finetune}/{name}"):

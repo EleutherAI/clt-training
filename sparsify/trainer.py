@@ -22,6 +22,7 @@ from transformers import PreTrainedModel, get_linear_schedule_with_warmup
 
 from .config import TrainConfig
 from .data import MemmapDataset
+from .fused_encoder import DeadLatentLoss
 
 # from .nanogpt import Muon
 from .muon import Muon
@@ -348,7 +349,10 @@ class Trainer:
             optimizer.load_state_dict(opt_state)
 
         for name, sae in self.saes.items():
-            sae.load_state(f"{path}/{name}")
+            if os.path.exists(f"{path}/{name}"):
+                sae.load_state(f"{path}/{name}")
+            else:
+                print(f"No checkpoint found for {name} at {path}, skipping")
 
     def get_current_k(self) -> int:
         """Get the current k value based on a linear decay schedule."""
@@ -597,21 +601,22 @@ class Trainer:
             if raw.cfg.normalize_decoder and not self.cfg.sae.transcode:
                 raw.set_decoder_norm_to_unit_norm()
 
-            # Always use CrossLayerRunner
-            # Matryoshka logic is now handled in MatryoshkaMidDecoder
-            current_runner = runner
 
-            out = current_runner(
+            encoding = runner.encode(
+
                 inputs,
-                outputs,
-                sparse_coder=wrapped,
-                module_name=name,
-                detach_grad=loss_fn == "fvu",
+                sparse_coder=raw,
                 dead_mask=(
                     self.num_tokens_since_fired[name] > self.cfg.dead_feature_threshold
                     if self.cfg.auxk_alpha > 0
                     else None
                 ),
+            )
+            out = runner.decode(
+                encoding,
+                outputs,
+                module_name=name,
+                detach_grad=loss_fn == "fvu",
                 loss_mask=(~bos_mask_mesh if loss_fn == "fvu" else None),
             )
             output = out.sae_out
@@ -626,7 +631,8 @@ class Trainer:
                 fvu_losses[name] = float(out.fvu.detach())
 
             # Update the did_fire mask
-            latent_indices = out.latent_indices.flatten()
+            latent_indices = encoding.latent_indices.flatten()
+
             if isinstance(latent_indices, DTensor):
                 latent_indices = latent_indices.to_local()
             did_fire[name][latent_indices] = True
@@ -668,10 +674,33 @@ class Trainer:
                     avg_multi_topk_fvu[name] += float(
                         out.multi_topk_fvu.detach() / denom
                     )
+
+                dead_latent_loss = 0.0
+                if self.cfg.dead_latent_penalty > 0.0:
+                    if isinstance(raw.W_dec, DTensor):
+                        norms = (
+                            raw.W_dec.pow(2).sum(dim=-1).add(1e-10).sqrt()
+                        )  # .detach()
+                    else:
+                        norms = raw.W_dec.norm(dim=-1)
+                    dead_latent_loss = DeadLatentLoss.apply(
+                        inputs, raw.encoder.weight, raw.encoder.bias, norms
+                    )
+                    active_correction = (
+                        encoding.latent_acts.to_local()
+                        * norms.to_local()[encoding.latent_indices.to_local()]
+                    ).sum()
+                    if self.mesh is not None:
+                        active_correction = DTensor.from_local(
+                            active_correction, self.mesh, [Replicate(), Replicate()]
+                        )
+                    dead_latent_loss = dead_latent_loss + active_correction
+
                 loss = (
                     out.fvu
                     + self.cfg.auxk_alpha * out.auxk_loss
                     + out.multi_topk_fvu / 8
+                    + self.cfg.dead_latent_penalty * dead_latent_loss
                 ) / acc_steps
 
                 # Do a "local" backward pass if we're not training end-to-end

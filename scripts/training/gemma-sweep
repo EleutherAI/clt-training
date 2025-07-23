@@ -20,7 +20,7 @@ OPTIM_ARGS="--optimizer adam --lr $LR --lr_warmup_steps 50 --batch_size=$BS"
 AFFINE="--post_encoder_scale=True --train_post_encoder=True"
 SKIP="--skip_connection=True"
 NAME=
-LLAMA_IN_HOOKPOINTS="layers.0.post_attention_layernorm layers.1.post_attention_layernorm layers.2.post_attention_layernorm layers.3.post_attention_layernorm layers.4.post_attention_layernorm layers.5.post_attention_layernorm layers.6.post_attention_layernorm layers.7.post_attention_layernorm layers.8.post_attention_layernorm layers.9.post_attention_layernorm layers.10.post_attention_layernorm layers.11.post_attention_layernorm layers.12.post_attention_layernorm layers.13.post_attention_layernorm layers.14.post_attention_layernorm layers.15.post_attention_layernorm"
+LLAMA_IN_HOOKPOINTS="layers.0.pre_feedforward_layernorm layers.1.pre_feedforward_layernorm layers.2.pre_feedforward_layernorm layers.3.pre_feedforward_layernorm layers.4.pre_feedforward_layernorm layers.5.pre_feedforward_layernorm layers.6.pre_feedforward_layernorm layers.7.pre_feedforward_layernorm layers.8.pre_feedforward_layernorm layers.9.pre_feedforward_layernorm layers.10.pre_feedforward_layernorm layers.11.pre_feedforward_layernorm layers.12.pre_feedforward_layernorm layers.13.pre_feedforward_layernorm layers.14.pre_feedforward_layernorm layers.15.pre_feedforward_layernorm layers.16.pre_feedforward_layernorm layers.17.pre_feedforward_layernorm layers.18.pre_feedforward_layernorm layers.19.pre_feedforward_layernorm layers.20.pre_feedforward_layernorm layers.21.pre_feedforward_layernorm layers.22.pre_feedforward_layernorm layers.23.pre_feedforward_layernorm layers.24.pre_feedforward_layernorm layers.25.pre_feedforward_layernorm"
 IN_HOOKPOINTS=
 if [ -z "$CONFIG" ]; then
     CONFIG=tied
@@ -70,26 +70,22 @@ N_DEVICE_CHARS=${#CUDA_VISIBLE_DEVICES}
 N_DEVICES=$(( ($N_DEVICE_CHARS + 1) / 2 ))
 echo "Using $N_DEVICES devices"
 
-if [ -z "$RESUME" ]; then
-    resume=""
-else
-    resume="--resume"
-fi
-
 OPTIMIZER=adam8 \
 WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
-meta-llama/Llama-3.2-1B --ctx_len 128 \
+google/gemma-3-1b-pt --ctx_len 128 \
 --transcode=True $SKIP \
 --expansion_factor=$EF --k=$K --tp=$N_DEVICES \
 $IN_HOOKPOINTS \
---hookpoints layers.0.mlp layers.1.mlp layers.2.mlp layers.3.mlp layers.4.mlp layers.5.mlp layers.6.mlp layers.7.mlp layers.8.mlp layers.9.mlp layers.10.mlp layers.11.mlp \
-layers.12.mlp layers.13.mlp layers.14.mlp layers.15.mlp \
+--hookpoints layers.0.post_feedforward_layernorm layers.1.post_feedforward_layernorm layers.2.post_feedforward_layernorm layers.3.post_feedforward_layernorm layers.4.post_feedforward_layernorm layers.5.post_feedforward_layernorm layers.6.post_feedforward_layernorm layers.7.post_feedforward_layernorm layers.8.post_feedforward_layernorm layers.9.post_feedforward_layernorm layers.10.post_feedforward_layernorm layers.11.post_feedforward_layernorm \
+layers.12.post_feedforward_layernorm layers.13.post_feedforward_layernorm layers.14.post_feedforward_layernorm layers.15.post_feedforward_layernorm \
+layers.16.post_feedforward_layernorm layers.17.post_feedforward_layernorm layers.18.post_feedforward_layernorm layers.19.post_feedforward_layernorm \
+layers.20.post_feedforward_layernorm layers.21.post_feedforward_layernorm layers.22.post_feedforward_layernorm layers.23.post_feedforward_layernorm \
+layers.24.post_feedforward_layernorm layers.25.post_feedforward_layernorm \
 --filter_bos True --remove_first_token True \
 $CROSSING \
 $AFFINE --normalize_io=True \
---run_name llama-sweep/$NAME \
+--run_name gemma3-sweep/$NAME \
 $SAVE_ARGS \
 $OPTIM_ARGS \
-$extra \
-$resume
+$extra
 # --dtype bfloat16
