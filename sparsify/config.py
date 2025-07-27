@@ -96,6 +96,10 @@ class SparseCoderConfig(Serializable):
     use_fp8: bool = False
     """Use FP8 for the sparse coder."""
 
+    @property
+    def mxd(self):
+        return self.mxd_h > 0
+
 
 # Support different naming conventions for the same configuration
 SaeConfig = SparseCoderConfig

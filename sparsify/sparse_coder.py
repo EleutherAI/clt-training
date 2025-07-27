@@ -228,6 +228,8 @@ class MidDecoder:
                 x,
                 molt_in.T,
                 molt_indices,
+                # TODO no backward pass for dense_dense_sparseout_matmul
+                force_naive=True,
             )
             molt_activations = (
                 molt_activations_raw.unflatten(-1, (-1, self.sparse_coder.cfg.molt_n))
@@ -253,6 +255,19 @@ class MidDecoder:
                 molt_indices,
                 molt_activations,
                 self.sparse_coder.W_molt_out,
+            )
+        if self.sparse_coder.cfg.mxd:
+            x = self.x.to(self.sparse_coder.dtype)
+            mxd_encoded = x @ self.sparse_coder.W_mxd_in.T + self.sparse_coder.b_mxd_enc
+            if isinstance(sae_out, dtensor.DTensor):
+                sae_out = sae_out.redistribute(
+                    sae_out.device_mesh,
+                    (dtensor.Shard(0), dtensor.Replicate()),
+                )
+            mxd_encoded = sae_out * mxd_encoded
+            sae_out = (
+                mxd_encoded @ self.sparse_coder.W_mxd_out.T
+                + self.sparse_coder.b_mxd_dec
             )
         sae_out += addition
 
@@ -351,6 +366,7 @@ class SparseCoder(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.d_in = d_in
+        mxd_dim = d_in * cfg.mxd_h if cfg.mxd_h > 0 else d_in
         self.num_latents = cfg.num_latents or d_in * cfg.expansion_factor
         self.multi_target = cfg.n_targets > 0 and cfg.transcode
         self.mesh = mesh
@@ -415,7 +431,7 @@ class SparseCoder(nn.Module):
                         num_latents *= max(1, cfg.n_sources)
                     if mesh is not None:
                         result = dtensor.zeros(
-                            (num_latents, d_in),
+                            (num_latents, mxd_dim),
                             dtype=decoder_dtype,
                             device_mesh=mesh,
                             placements=[
@@ -425,7 +441,7 @@ class SparseCoder(nn.Module):
                         )
                     else:
                         result = torch.zeros(
-                            num_latents, d_in, device=device, dtype=decoder_dtype
+                            num_latents, mxd_dim, device=device, dtype=decoder_dtype
                         )
                     return nn.Parameter(result)
 
@@ -445,28 +461,6 @@ class SparseCoder(nn.Module):
                 else:
                     self.W_dec = create_W_dec()
 
-            if cfg.molt_n > 0:
-
-                def create_molt_weight():
-                    if mesh is not None:
-                        result = dtensor.zeros(
-                            (self.num_latents * self.cfg.molt_n, self.d_in),
-                            dtype=decoder_dtype,
-                            device_mesh=mesh,
-                            placements=[dtensor.Replicate(), dtensor.Shard(1)],
-                        )
-                    else:
-                        result = torch.zeros(
-                            self.num_latents * self.cfg.molt_n,
-                            self.d_in,
-                            device=device,
-                            dtype=decoder_dtype,
-                        )
-                    return nn.Parameter(result)
-
-                self.W_molt_in = create_molt_weight()
-                self.W_molt_out = create_molt_weight()
-
             # Sparse autoencoder initialization: use the transpose of encoder weights
             else:
                 self.W_dec = nn.Parameter(self.encoder.weight.data.clone())
@@ -475,10 +469,64 @@ class SparseCoder(nn.Module):
         else:
             self.W_dec = None
 
+        if cfg.molt_n > 0:
+
+            def create_molt_weight():
+                if mesh is not None:
+                    result = dtensor.zeros(
+                        (self.num_latents * self.cfg.molt_n, self.d_in),
+                        dtype=decoder_dtype,
+                        device_mesh=mesh,
+                        placements=[dtensor.Replicate(), dtensor.Shard(1)],
+                    )
+                else:
+                    result = torch.zeros(
+                        self.num_latents * self.cfg.molt_n,
+                        self.d_in,
+                        device=device,
+                        dtype=decoder_dtype,
+                    )
+                return nn.Parameter(result)
+
+            self.W_molt_in = create_molt_weight()
+            self.W_molt_out = create_molt_weight()
+
+        if not mxd_dim:
+            self.W_mxd_in = None
+            self.W_mxd_out = None
+            self.b_mxd_enc = None
+            self.b_mxd_dec = None
+        else:
+            tp_dim = mesh.shape[1] if mesh is not None else 1
+            self.W_mxd_in = torch.randn(mxd_dim, d_in, device=device, dtype=dtype) / (
+                d_in**0.5
+            )
+            self.W_mxd_out = torch.randn(
+                d_in // tp_dim, mxd_dim, device=device, dtype=dtype
+            ) / (mxd_dim**0.5)
+            self.b_mxd_enc = torch.zeros(mxd_dim, device=device, dtype=dtype)
+            self.b_mxd_dec = torch.zeros(d_in // tp_dim, device=device, dtype=dtype)
+            for param_name in ["W_mxd_in", "W_mxd_out", "b_mxd_enc", "b_mxd_dec"]:
+                weight = getattr(self, param_name)
+                if mesh is not None:
+                    weight = dtensor.DTensor.from_local(
+                        weight,
+                        mesh,
+                        placements=[
+                            dtensor.Replicate(),
+                            (
+                                dtensor.Replicate()
+                                if param_name not in ("W_mxd_out", "b_mxd_dec")
+                                else dtensor.Shard(0)
+                            ),
+                        ],
+                    )
+                setattr(self, param_name, nn.Parameter(weight))
+
         def create_bias():
             if mesh is not None:
                 result = dtensor.zeros(
-                    (self.d_in,),
+                    (mxd_dim,),
                     dtype=dtype,
                     device_mesh=mesh,
                     placements=[
@@ -487,7 +535,7 @@ class SparseCoder(nn.Module):
                     ],
                 )
             else:
-                result = torch.zeros(self.d_in, device=device, dtype=dtype)
+                result = torch.zeros(mxd_dim, device=device, dtype=dtype)
             return nn.Parameter(result)
 
         def create_W_skip():
@@ -495,13 +543,13 @@ class SparseCoder(nn.Module):
                 return None
             if mesh is not None:
                 result = dtensor.zeros(
-                    (self.d_in, self.d_in),
+                    (mxd_dim, self.d_in),
                     dtype=dtype,
                     device_mesh=mesh,
                     placements=[dtensor.Replicate(), dtensor.Shard(0)],
                 )
             else:
-                result = torch.zeros(self.d_in, self.d_in, device=device, dtype=dtype)
+                result = torch.zeros(mxd_dim, self.d_in, device=device, dtype=dtype)
             return nn.Parameter(result)
 
         if self.multi_target and self.cfg.coalesce_topk not in ("concat", "per-layer"):
