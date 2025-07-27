@@ -16,6 +16,7 @@ from torch.distributed.tensor.device_mesh import DeviceMesh
 
 from .config import SparseCoderConfig
 from .fused_encoder import NO_COMPILE, EncoderOutput, fused_encoder
+from .kernels import triton_dense_dense_sparseout_matmul
 from .utils import decoder_impl, load_sharded, save_sharded
 
 
@@ -201,6 +202,58 @@ class MidDecoder:
         )
         if W_skip is not None:
             sae_out += self.x.to(self.sparse_coder.dtype) @ W_skip.mT
+        if self.sparse_coder.cfg.molt_n > 0:
+            # it's MOLTing time!
+            latent_indices, latent_acts = (
+                self.latent_indices.to_local(),
+                self.latent_acts.to_local(),
+            )
+            if isinstance(self.x, dtensor.DTensor):
+                mesh = self.x.device_mesh
+                x = self.x.redistribute(
+                    mesh,
+                    (dtensor.Shard(0), dtensor.Shard(1)),
+                ).to_local()
+            else:
+                x = self.x
+            x = x.to(self.sparse_coder.dtype)
+            molt_indices = latent_indices[
+                ..., None
+            ] * self.sparse_coder.cfg.molt_n + torch.arange(
+                self.sparse_coder.cfg.molt_n, device=self.latent_indices.device
+            )
+            molt_indices = molt_indices.flatten(-2, -1)
+            molt_in = self.sparse_coder.W_molt_in.to_local()
+            molt_activations_raw = triton_dense_dense_sparseout_matmul(
+                x,
+                molt_in.T,
+                molt_indices,
+            )
+            molt_activations = (
+                molt_activations_raw.unflatten(-1, (-1, self.sparse_coder.cfg.molt_n))
+                * latent_acts[..., None]
+            )
+            molt_activations = molt_activations.flatten(-2, -1)
+            if isinstance(self.latent_acts, dtensor.DTensor):
+                mesh = self.sparse_coder.W_molt_out.device_mesh
+                molt_indices = dtensor.DTensor.from_local(
+                    molt_indices,
+                    mesh,
+                    placements=self.latent_acts.placements,
+                )
+                molt_activations = dtensor.DTensor.from_local(
+                    molt_activations,
+                    mesh,
+                    placements=[dtensor.Shard(0), dtensor.Partial("sum")],
+                ).redistribute(
+                    mesh,
+                    self.latent_acts.placements,
+                )
+            sae_out += decoder_impl(
+                molt_indices,
+                molt_activations,
+                self.sparse_coder.W_molt_out,
+            )
         sae_out += addition
 
         if denormalize:
@@ -391,6 +444,28 @@ class SparseCoder(nn.Module):
                     self.W_dec = self.W_decs[0]
                 else:
                     self.W_dec = create_W_dec()
+
+            if cfg.molt_n > 0:
+
+                def create_molt_weight():
+                    if mesh is not None:
+                        result = dtensor.zeros(
+                            (self.num_latents * self.cfg.molt_n, self.d_in),
+                            dtype=decoder_dtype,
+                            device_mesh=mesh,
+                            placements=[dtensor.Replicate(), dtensor.Shard(1)],
+                        )
+                    else:
+                        result = torch.zeros(
+                            self.num_latents * self.cfg.molt_n,
+                            self.d_in,
+                            device=device,
+                            dtype=decoder_dtype,
+                        )
+                    return nn.Parameter(result)
+
+                self.W_molt_in = create_molt_weight()
+                self.W_molt_out = create_molt_weight()
 
             # Sparse autoencoder initialization: use the transpose of encoder weights
             else:

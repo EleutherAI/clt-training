@@ -40,6 +40,12 @@ class SparseCoderConfig(Serializable):
     k: int = 32
     """Number of nonzero features."""
 
+    molt_n: int = 0
+    """Expansion factor for MOLT. 0 = no MOLT."""
+
+    mxd_h: int = 0
+    """Hidden dimension for MxD. 0 = no MxD."""
+
     multi_topk: bool = False
     """Use Multi-TopK loss."""
 

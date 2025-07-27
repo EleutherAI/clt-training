@@ -358,6 +358,12 @@ def triton_dense_dense_sparseout_matmul(
         # naive is more efficient for large K
         return (dense1 @ dense2).gather(1, at_indices)
 
+    if TRITON_DEBUG:
+        assert dense1.is_contiguous(), "dense1 must be contiguous"
+        assert dense2.T.is_contiguous(), "dense2 must be contiguous"
+        assert at_indices.is_contiguous(), "at_indices must be contiguous"
+        assert at_indices.max().item() < N, "at_indices must be less than N"
+
     out = torch.zeros(A, K, device=dense1.device, dtype=dense1.dtype)
 
     # grid = lambda META: (triton.cdiv(A, META['BLOCK_SIZE_A']),)

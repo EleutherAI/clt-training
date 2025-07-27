@@ -20,6 +20,12 @@ else
     LR=$LR
 fi
 
+if [ -z "$EF" ]; then
+    EF=128
+else
+    EF=$EF
+fi
+
 NAME=bs${BS}-lr$LR
 SKIP="--skip_connection=True"
 SCALING="--post_encoder_scale=True"
@@ -28,6 +34,11 @@ if [ -z "$CFG" ]; then
 else
     if [ "$CFG" == "none" ]; then
         CROSSING=""
+    elif [ "$CFG" == "molt" ]; then
+        molt_n=8
+        extra="$extra --molt_n=$molt_n"
+        EF=$((EF / molt_n))
+        echo "MOLT enabled. Expansion factor reduced to $EF."
     elif [ "$CFG" == "no-affine" ]; then
         CROSSING="--train_post_encoder=False" SCALING=""
     elif [ "$CFG" == "btopk" ]; then
@@ -70,11 +81,6 @@ else
         exit 1
     fi
     NAME=${NAME}-$CFG
-fi
-if [ -z "$EF" ]; then
-    EF=128
-else
-    EF=$EF
 fi
 NAME=${NAME}-ef$EF
 if [ -z "$K" ]; then
@@ -122,7 +128,7 @@ N_DEVICE_CHARS=${#CUDA_VISIBLE_DEVICES}
 N_DEVICES=$(( ($N_DEVICE_CHARS + 1) / 2 ))
 echo "Using $N_DEVICES devices"
 # WANDB_ENTITY=eleutherai uv run python -m sparsify \
-WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
+WANDB_ENTITY=eleutherai torchrun --master_port $PORT --nproc_per_node gpu -m sparsify \
 openai-community/gpt2 --ctx_len 128 --filter_bos=True --remove_first_token=True \
 --transcode=True $SKIP \
 --batch_size=$BS --expansion_factor=$EF --k=$K --tp=$N_DEVICES \
