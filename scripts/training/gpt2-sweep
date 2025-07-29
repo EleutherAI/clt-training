@@ -35,10 +35,17 @@ else
     if [ "$CFG" == "none" ]; then
         CROSSING=""
     elif [ "$CFG" == "molt" ]; then
-        molt_n=8
+        molt_n=32
         extra="$extra --molt_n=$molt_n"
         EF=$((EF / molt_n))
+        SKIP=""
         echo "MOLT enabled. Expansion factor reduced to $EF."
+    elif [ "$CFG" == "mxd" ]; then
+        mxd_h=2
+        extra="$extra --mxd_h=$mxd_h"
+        EF=$((EF / mxd_h))
+        SKIP=""
+        echo "MXD enabled. Expansion factor reduced to $EF."
     elif [ "$CFG" == "no-affine" ]; then
         CROSSING="--train_post_encoder=False" SCALING=""
     elif [ "$CFG" == "btopk" ]; then
@@ -122,6 +129,10 @@ fi
 if ! [ -z "$BF16" ]; then
     extra="$extra --dtype bfloat16"
     NAME=$NAME-bf16
+fi
+
+if [ -z "$SAVE_OPTIM" ]; then
+    extra="$extra --save_optim=False"
 fi
 
 N_DEVICE_CHARS=${#CUDA_VISIBLE_DEVICES}

@@ -471,24 +471,32 @@ class SparseCoder(nn.Module):
 
         if cfg.molt_n > 0:
 
-            def create_molt_weight():
+            def create_molt_weight(scale: float = 1.0):
                 if mesh is not None:
-                    result = dtensor.zeros(
-                        (self.num_latents * self.cfg.molt_n, self.d_in),
-                        dtype=decoder_dtype,
-                        device_mesh=mesh,
-                        placements=[dtensor.Replicate(), dtensor.Shard(1)],
+                    result = (
+                        dtensor.randn(
+                            (self.num_latents * self.cfg.molt_n, self.d_in),
+                            dtype=decoder_dtype,
+                            device_mesh=mesh,
+                            placements=[dtensor.Replicate(), dtensor.Shard(1)],
+                        )
+                        / (self.d_in**0.5)
+                        * scale
                     )
                 else:
-                    result = torch.zeros(
-                        self.num_latents * self.cfg.molt_n,
-                        self.d_in,
-                        device=device,
-                        dtype=decoder_dtype,
+                    result = (
+                        torch.randn(
+                            self.num_latents * self.cfg.molt_n,
+                            self.d_in,
+                            device=device,
+                            dtype=decoder_dtype,
+                        )
+                        / (self.d_in**0.5)
+                        * scale
                     )
                 return nn.Parameter(result)
 
-            self.W_molt_in = create_molt_weight()
+            self.W_molt_in = create_molt_weight(scale=1 / self.cfg.molt_n**0.5)
             self.W_molt_out = create_molt_weight()
 
         if not mxd_dim:

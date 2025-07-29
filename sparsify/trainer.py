@@ -945,21 +945,22 @@ class Trainer:
 
             sae.save_to_disk(f"{path}/{name}")
 
-        for i, optimizer in enumerate(self.optimizers):
-            optimizer_state_dict = optimizer.state_dict()
-            if isinstance(optimizer, Muon):
-                for param_group in optimizer_state_dict["param_groups"]:
-                    if "update_buffer" in param_group:
-                        del param_group["update_buffer"]
-                    if "update_buffer_views" in param_group:
-                        del param_group["update_buffer_views"]
-            save_sharded(
-                optimizer_state_dict,
-                f"{path}/optimizer_{i}.pt",
-                self.mesh,
-                save_st=False,
-                unflatten=True,
-            )
+        if self.cfg.save_optim:
+            for i, optimizer in enumerate(self.optimizers):
+                optimizer_state_dict = optimizer.state_dict()
+                if isinstance(optimizer, Muon):
+                    for param_group in optimizer_state_dict["param_groups"]:
+                        if "update_buffer" in param_group:
+                            del param_group["update_buffer"]
+                        if "update_buffer_views" in param_group:
+                            del param_group["update_buffer_views"]
+                save_sharded(
+                    optimizer_state_dict,
+                    f"{path}/optimizer_{i}.pt",
+                    self.mesh,
+                    save_st=False,
+                    unflatten=True,
+                )
 
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         if rank_zero:
