@@ -601,9 +601,7 @@ class Trainer:
             if raw.cfg.normalize_decoder and not self.cfg.sae.transcode:
                 raw.set_decoder_norm_to_unit_norm()
 
-
             encoding = runner.encode(
-
                 inputs,
                 sparse_coder=raw,
                 dead_mask=(
@@ -706,8 +704,6 @@ class Trainer:
                 # Do a "local" backward pass if we're not training end-to-end
                 loss.backward()
             del loss
-
-            current_runner.restore()
 
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
