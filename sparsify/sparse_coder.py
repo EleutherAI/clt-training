@@ -203,11 +203,16 @@ class MidDecoder:
         if W_skip is not None:
             sae_out += self.x.to(self.sparse_coder.dtype) @ W_skip.mT
         if self.sparse_coder.cfg.molt_n > 0:
-            # it's MOLTing time!
-            latent_indices, latent_acts = (
-                self.latent_indices.to_local(),
-                self.latent_acts.to_local(),
-            )
+            if isinstance(self.latent_indices, dtensor.DTensor):
+                latent_indices, latent_acts = (
+                    self.latent_indices.to_local(),
+                    self.latent_acts.to_local(),
+                )
+            else:
+                latent_indices, latent_acts = (
+                    self.latent_indices,
+                    self.latent_acts,
+                )
             if isinstance(self.x, dtensor.DTensor):
                 mesh = self.x.device_mesh
                 x = self.x.redistribute(
@@ -223,7 +228,10 @@ class MidDecoder:
                 self.sparse_coder.cfg.molt_n, device=self.latent_indices.device
             )
             molt_indices = molt_indices.flatten(-2, -1)
-            molt_in = self.sparse_coder.W_molt_in.to_local()
+            molt_in = self.sparse_coder.W_molt_in
+            if isinstance(molt_in, dtensor.DTensor):
+                molt_in = molt_in.to_local()
+
             molt_activations_raw = triton_dense_dense_sparseout_matmul(
                 x,
                 molt_in.T,
