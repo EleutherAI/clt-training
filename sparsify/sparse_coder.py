@@ -574,7 +574,7 @@ class MatryoshkaMidDecoder(MidDecoder):
                 auxk_loss = (e_hat - residuals[i].detach()).pow(2).sum()
                 auxk_loss = scale * auxk_loss / total_variance
             else:
-                auxk_loss = torch.tensor(0.0, device=y.device, dtype=y.dtype)
+                auxk_loss = y.new_tensor(0.0)
             auxk_losses.append(auxk_loss)
 
             # Compute Multi-TopK loss for this slice
@@ -585,7 +585,7 @@ class MatryoshkaMidDecoder(MidDecoder):
                 multi_sae_out = self.sparse_coder.decode(top_acts, top_indices, index)
                 multi_topk_fvu = (multi_sae_out - y).pow(2).sum() / total_variance
             else:
-                multi_topk_fvu = torch.tensor(0.0, device=y.device, dtype=y.dtype)
+                multi_topk_fvu = y.new_tensor(0.0)
             multi_losses.append(multi_topk_fvu)
 
             # Compute slice metrics
