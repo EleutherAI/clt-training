@@ -40,6 +40,12 @@ class SparseCoderConfig(Serializable):
     k: int = 32
     """Number of nonzero features."""
 
+    molt_n: int = 0
+    """Expansion factor for MOLT. 0 = no MOLT."""
+
+    mxd_h: int = 0
+    """Hidden dimension for MxD. 0 = no MxD."""
+
     multi_topk: bool = False
     """Use Multi-TopK loss."""
 
@@ -89,6 +95,10 @@ class SparseCoderConfig(Serializable):
 
     use_fp8: bool = False
     """Use FP8 for the sparse coder."""
+
+    @property
+    def mxd(self):
+        return self.mxd_h > 0
 
 
 # Support different naming conventions for the same configuration
@@ -202,6 +212,9 @@ class TrainConfig(Serializable):
 
     save_best: bool = False
     """Save the best checkpoint found for each hookpoint."""
+
+    save_optim: bool = True
+    """Save the optimizer state."""
 
     finetune: str | None = None
     """Finetune the sparse coders from a pretrained checkpoint."""

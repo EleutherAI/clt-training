@@ -333,6 +333,7 @@ def triton_dense_dense_sparseout_matmul(
     dense1: torch.Tensor,
     dense2: torch.Tensor,
     at_indices: torch.Tensor,
+    force_naive: bool = False,
 ) -> torch.Tensor:
     """
     dense1: shape (A, B)
@@ -353,10 +354,16 @@ def triton_dense_dense_sparseout_matmul(
     assert dense1.stride(1) == 1, "dense1 must be contiguous along B"
     assert dense2.stride(0) == 1, "dense2 must be contiguous along B"
 
-    if K > 512:
+    if K > 512 or force_naive:
         # print("WARN - using naive matmul for large K")
         # naive is more efficient for large K
         return (dense1 @ dense2).gather(1, at_indices)
+
+    if TRITON_DEBUG:
+        assert dense1.is_contiguous(), "dense1 must be contiguous"
+        assert dense2.T.is_contiguous(), "dense2 must be contiguous"
+        assert at_indices.is_contiguous(), "at_indices must be contiguous"
+        assert at_indices.max().item() < N, "at_indices must be less than N"
 
     out = torch.zeros(A, K, device=dense1.device, dtype=dense1.dtype)
 

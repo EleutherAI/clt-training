@@ -547,37 +547,40 @@ class Trainer:
             # wrapped = maybe_wrapped[name]
             wrapped = raw
             if self.global_step == 0 and not self.cfg.finetune:
-                # Ensure the preactivations are centered at initialization
-                # This is mathematically equivalent to Anthropic's proposal of
-                # subtracting the decoder bias
-                if self.cfg.sae.transcode:
+                if not self.cfg.sae.mxd:
+                    # Ensure the preactivations are centered at initialization
+                    # This is mathematically equivalent to Anthropic's proposal of
+                    # subtracting the decoder bias
+                    if self.cfg.sae.transcode:
+                        if self.mesh is not None and self.mesh.shape[0] == 1:
+                            # fix annoying SIGSEGV
+                            mean = inputs.to_local().mean(0).to(raw.dtype)
+                            mean = DTensor.from_local(
+                                mean, self.mesh, [Replicate(), Replicate()]
+                            )
+                        else:
+                            mean = inputs.mean(0).to(raw.dtype)
+                        mean, weight, bias = (
+                            -mean,
+                            wrapped.encoder.weight.data,
+                            wrapped.encoder.bias.data * 0,
+                        )
+                        mean_image = torch.nn.functional.linear(mean, weight, bias)
+                        raw.encoder.bias.data[:] = mean_image
+
                     if self.mesh is not None and self.mesh.shape[0] == 1:
-                        # fix annoying SIGSEGV
-                        mean = inputs.to_local().mean(0).to(raw.dtype)
+                        mean = outputs.to_local().mean(0).to(raw.dtype)
                         mean = DTensor.from_local(
-                            mean, self.mesh, [Replicate(), Replicate()]
+                            mean, self.mesh, [Replicate(), Shard(0)]
                         )
                     else:
-                        mean = inputs.mean(0).to(raw.dtype)
-                    mean, weight, bias = (
-                        -mean,
-                        wrapped.encoder.weight.data,
-                        wrapped.encoder.bias.data * 0,
-                    )
-                    mean_image = torch.nn.functional.linear(mean, weight, bias)
-                    raw.encoder.bias.data[:] = mean_image
-
-                if self.mesh is not None and self.mesh.shape[0] == 1:
-                    mean = outputs.to_local().mean(0).to(raw.dtype)
-                    mean = DTensor.from_local(mean, self.mesh, [Replicate(), Shard(0)])
-                else:
-                    mean = outputs.mean(0)
-                if not hasattr(raw, "b_decs"):
-                    raw.b_dec.data[:] = mean.to(raw.dtype)
-                else:
-                    # the current layer must be what handles the bias,
-                    # not the contributing previous layers
-                    raw.b_decs[0].data[:] = mean.to(raw.dtype)
+                        mean = outputs.mean(0)
+                    if not hasattr(raw, "b_decs"):
+                        raw.b_dec.data[:] = mean.to(raw.dtype)
+                    else:
+                        # the current layer must be what handles the bias,
+                        # not the contributing previous layers
+                        raw.b_decs[0].data[:] = mean.to(raw.dtype)
 
                 if raw.cfg.normalize_io:
                     in_norm = inputs.norm(dim=-1).mean()
@@ -942,21 +945,22 @@ class Trainer:
 
             sae.save_to_disk(f"{path}/{name}")
 
-        for i, optimizer in enumerate(self.optimizers):
-            optimizer_state_dict = optimizer.state_dict()
-            if isinstance(optimizer, Muon):
-                for param_group in optimizer_state_dict["param_groups"]:
-                    if "update_buffer" in param_group:
-                        del param_group["update_buffer"]
-                    if "update_buffer_views" in param_group:
-                        del param_group["update_buffer_views"]
-            save_sharded(
-                optimizer_state_dict,
-                f"{path}/optimizer_{i}.pt",
-                self.mesh,
-                save_st=False,
-                unflatten=True,
-            )
+        if self.cfg.save_optim:
+            for i, optimizer in enumerate(self.optimizers):
+                optimizer_state_dict = optimizer.state_dict()
+                if isinstance(optimizer, Muon):
+                    for param_group in optimizer_state_dict["param_groups"]:
+                        if "update_buffer" in param_group:
+                            del param_group["update_buffer"]
+                        if "update_buffer_views" in param_group:
+                            del param_group["update_buffer_views"]
+                save_sharded(
+                    optimizer_state_dict,
+                    f"{path}/optimizer_{i}.pt",
+                    self.mesh,
+                    save_st=False,
+                    unflatten=True,
+                )
 
         rank_zero = not dist.is_initialized() or dist.get_rank() == 0
         if rank_zero:
