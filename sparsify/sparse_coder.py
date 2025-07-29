@@ -444,6 +444,194 @@ class MatryoshkaMidDecoder(MidDecoder):
 
         return fvu, auxk_loss, multi_topk_fvu
 
+    def _compute_all_slices(
+        self,
+        y: Tensor,
+        index: int = 0,
+        loss_mask: Optional[Tensor] = None,
+    ) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[dict]]:
+        """Compute losses for all slices in parallel using vectorized operations.
+
+        Returns:
+            (fvu_losses, auxk_losses, multi_losses, slice_metrics)
+        """
+        if self.pre_acts is None:
+            return [], [], [], []
+
+        batch_size, seq_len = self.pre_acts.shape
+        num_slices = len(self.expansion_factors)
+        k = self.sparse_coder.cfg.k
+
+        # Create all slice masks and stack them: (num_slices, num_latents)
+        slice_masks = torch.stack(self._create_slice_masks())
+
+        # Broadcast and apply all masks at once: (num_slices, batch_size, num_latents)
+        slice_pre_acts = self.pre_acts.unsqueeze(0) * slice_masks.unsqueeze(1).float()
+
+        # Reshape for parallel top-k: (num_slices * batch_size, num_latents)
+        slice_pre_acts_flat = slice_pre_acts.view(num_slices * batch_size, -1)
+
+        # Parallel top-k across all slices: (num_slices * batch_size, k)
+        slice_top_acts_flat, slice_top_indices_flat = torch.topk(
+            slice_pre_acts_flat, k, dim=1, sorted=False
+        )
+
+        # Reshape back: (num_slices, batch_size, k)
+        slice_top_acts = slice_top_acts_flat.view(num_slices, batch_size, k)
+        slice_top_indices = slice_top_indices_flat.view(num_slices, batch_size, k)
+
+        # Batch decode all slices - reshape to process all at once
+        # (num_slices * batch_size, k) for decoder
+        all_slice_outputs = self.sparse_coder.decode(
+            slice_top_acts_flat, slice_top_indices_flat, index
+        )
+        # Reshape back: (num_slices, batch_size, d_in)
+        all_slice_outputs = all_slice_outputs.view(num_slices, batch_size, -1)
+
+        # Add skip connections if enabled
+        W_skip = (
+            self.sparse_coder.W_skips[index]
+            if hasattr(self.sparse_coder, "W_skips")
+            else self.sparse_coder.W_skip
+        )
+        if W_skip is not None:
+            skip_out = self.x.to(self.sparse_coder.dtype) @ W_skip.mT
+            all_slice_outputs += skip_out.unsqueeze(0)  # Broadcast to all slices
+
+        # Denormalize all outputs
+        all_slice_outputs = self.sparse_coder.denormalize_output(all_slice_outputs)
+
+        # Vectorized loss computation
+        fvu_losses, auxk_losses, multi_losses, slice_metrics = (
+            self._compute_slice_losses(
+                all_slice_outputs,
+                slice_top_acts,
+                slice_top_indices,
+                slice_pre_acts,
+                y,
+                index,
+                loss_mask,
+            )
+        )
+
+        return fvu_losses, auxk_losses, multi_losses, slice_metrics
+
+    def _compute_slice_losses(
+        self,
+        all_slice_outputs: Tensor,  # (num_slices, batch_size, d_in)
+        slice_top_acts: Tensor,  # (num_slices, batch_size, k)
+        slice_top_indices: Tensor,  # (num_slices, batch_size, k)
+        slice_pre_acts: Tensor,  # (num_slices, batch_size, num_latents)
+        y: Tensor,
+        index: int,
+        loss_mask: Optional[Tensor] = None,
+    ) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[dict]]:
+        """Compute losses for all slices using vectorized operations."""
+        num_slices = all_slice_outputs.shape[0]
+
+        # Compute residuals for all slices: (num_slices, batch_size, d_in)
+        residuals = y.unsqueeze(0) - all_slice_outputs
+        if loss_mask is not None:
+            residuals = residuals * loss_mask.unsqueeze(0).unsqueeze(-1)
+
+        # Compute total variance (same for all slices)
+        if loss_mask is None:
+            total_variance = (y - y.mean(0)).pow(2).sum()
+        else:
+            lm = loss_mask[..., None]
+            y_mean = (y * lm).sum(0) / lm.sum(0)
+            total_variance = (y - y_mean).pow(2).mul(lm).sum()
+
+        # Vectorized FVU computation: (num_slices,)
+        l2_losses = residuals.pow(2).sum(dim=(1, 2))  # Sum over batch and features
+        fvu_losses = l2_losses / total_variance
+
+        # Prepare return lists
+        auxk_losses = []
+        multi_losses = []
+        slice_metrics = []
+
+        # Some losses need per-slice computation (AuxK, Multi-TopK, metrics)
+        for i in range(num_slices):
+            slice_size = int(slice_pre_acts[i].sum(dim=1).max().item())
+            slice_percent = (slice_size / self.sparse_coder.num_latents) * 100
+
+            # Compute AuxK loss for this slice
+            if (
+                self.dead_mask is not None
+                and self.pre_acts is not None
+                and (num_dead := int(self.dead_mask.sum())) > 0
+            ):
+                k_aux = y.shape[-1] // 2
+                scale = min(num_dead / k_aux, 1.0)
+                k_aux = min(k_aux, num_dead)
+
+                auxk_latents = torch.where(
+                    self.dead_mask[None], self.pre_acts, -torch.inf
+                )
+                auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
+                e_hat = self.sparse_coder.decode(auxk_acts, auxk_indices, index)
+                auxk_loss = (e_hat - residuals[i].detach()).pow(2).sum()
+                auxk_loss = scale * auxk_loss / total_variance
+            else:
+                auxk_loss = torch.tensor(0.0, device=y.device, dtype=y.dtype)
+            auxk_losses.append(auxk_loss)
+
+            # Compute Multi-TopK loss for this slice
+            if self.sparse_coder.cfg.multi_topk and self.pre_acts is not None:
+                top_acts, top_indices = self.pre_acts.topk(
+                    4 * self.sparse_coder.cfg.k, sorted=False
+                )
+                multi_sae_out = self.sparse_coder.decode(top_acts, top_indices, index)
+                multi_topk_fvu = (multi_sae_out - y).pow(2).sum() / total_variance
+            else:
+                multi_topk_fvu = torch.tensor(0.0, device=y.device, dtype=y.dtype)
+            multi_losses.append(multi_topk_fvu)
+
+            # Compute slice metrics
+            slice_pre_acts_i = slice_pre_acts[i]
+            slice_top_acts_i = slice_top_acts[i]
+            slice_top_indices_i = slice_top_indices[i]
+
+            # Pre-activation statistics
+            slice_pre_non_zero = (slice_pre_acts_i != 0).sum().item()
+            slice_pre_total = slice_pre_acts_i.numel()
+            slice_pre_sparsity = (
+                (slice_pre_total - slice_pre_non_zero) / slice_pre_total
+            ) * 100
+
+            # Top-k statistics
+            slice_top_non_zero = (slice_top_acts_i != 0).sum().item()
+            slice_top_total = slice_top_acts_i.numel()
+            slice_top_sparsity = (
+                (slice_top_total - slice_top_non_zero) / slice_top_total
+            ) * 100
+
+            slice_metric = {
+                f"slice_{i+1}_size": slice_size,
+                f"slice_{i+1}_percent": slice_percent,
+                f"slice_{i+1}_pre_non_zero": slice_pre_non_zero,
+                f"slice_{i+1}_pre_total": slice_pre_total,
+                f"slice_{i+1}_pre_sparsity": slice_pre_sparsity,
+                f"slice_{i+1}_pre_min": slice_pre_acts_i.min().item(),
+                f"slice_{i+1}_pre_max": slice_pre_acts_i.max().item(),
+                f"slice_{i+1}_pre_mean": slice_pre_acts_i.mean().item(),
+                f"slice_{i+1}_top_non_zero": slice_top_non_zero,
+                f"slice_{i+1}_top_total": slice_top_total,
+                f"slice_{i+1}_top_sparsity": slice_top_sparsity,
+                f"slice_{i+1}_top_min": slice_top_acts_i.min().item(),
+                f"slice_{i+1}_top_max": slice_top_acts_i.max().item(),
+                f"slice_{i+1}_top_mean": slice_top_acts_i.mean().item(),
+                f"slice_{i+1}_top_indices_min": slice_top_indices_i.min().item(),
+                f"slice_{i+1}_top_indices_max": slice_top_indices_i.max().item(),
+                f"slice_{i+1}_raw_fvu": fvu_losses[i].item(),
+                f"slice_{i+1}_raw_auxk": auxk_loss.item(),
+                f"slice_{i+1}_raw_multi_topk": multi_topk_fvu.item(),
+            }
+            slice_metrics.append(slice_metric)
+
+        return fvu_losses.tolist(), auxk_losses, multi_losses, slice_metrics
+
     @torch.autocast(
         "cuda",
         dtype=torch.bfloat16,
@@ -572,47 +760,20 @@ class MatryoshkaMidDecoder(MidDecoder):
                     }
                 )
 
-            # Slice-by-slice analysis
-            slice_metrics = []
-            for i, slice_mask in enumerate(slice_masks):
-                slice_size = int(slice_mask.sum().item())
-                slice_percent = (slice_size / self.sparse_coder.num_latents) * 100
+            # VECTORIZED SLICE COMPUTATION
+            # Process all slices in parallel using batched operations
+            slice_fvus, slice_auxks, slice_multis, slice_metrics = (
+                self._compute_all_slices(y, index, loss_mask)
+            )
 
-                # Apply mask to pre_acts
-                # (batchtopk already applied if activation == "batchtopk")
-                if self.pre_acts is not None:
-                    slice_pre_acts = self.pre_acts * slice_mask.float()
-                else:
-                    # If pre_acts is None, we can't compute slice losses
-                    continue
-
-                # Pre-activation statistics for this slice
-                slice_pre_non_zero = (slice_pre_acts != 0).sum().item()
-                slice_pre_total = slice_pre_acts.numel()
-                slice_pre_sparsity = (
-                    (slice_pre_total - slice_pre_non_zero) / slice_pre_total
-                ) * 100
-
-                # Apply top-k to this slice
-                slice_top_acts, slice_top_indices = torch.topk(
-                    slice_pre_acts, self.sparse_coder.cfg.k, dim=1, sorted=False
-                )
-
-                # Top-k statistics for this slice
-                slice_top_non_zero = (slice_top_acts != 0).sum().item()
-                slice_top_total = slice_top_acts.numel()
-                slice_top_sparsity = (
-                    (slice_top_total - slice_top_non_zero) / slice_top_total
-                ) * 100
-
-                # Compute losses for this slice
-                slice_fvu, slice_auxk, slice_multi = self._compute_slice_loss_fast(
-                    slice_top_acts, slice_top_indices, y, index, loss_mask
-                )
-
+            # Weight and accumulate losses
+            slice_masks = self._create_slice_masks()
+            for i, (slice_fvu, slice_auxk, slice_multi) in enumerate(
+                zip(slice_fvus, slice_auxks, slice_multis)
+            ):
                 # Normalize gradients to balance training across slices
                 # Weight by slice size so larger slices contribute more
-                slice_size_float = slice_mask.sum().float()
+                slice_size_float = slice_masks[i].sum().float()
                 total_latents = self.sparse_coder.num_latents
                 slice_weight = (
                     slice_size_float / total_latents
@@ -623,33 +784,15 @@ class MatryoshkaMidDecoder(MidDecoder):
                 slice_auxk_weighted = slice_auxk * slice_weight
                 slice_multi_weighted = slice_multi * slice_weight
 
-                # Collect slice metrics
-                slice_metric = {
-                    f"slice_{i+1}_size": slice_size,
-                    f"slice_{i+1}_percent": slice_percent,
-                    f"slice_{i+1}_pre_non_zero": slice_pre_non_zero,
-                    f"slice_{i+1}_pre_total": slice_pre_total,
-                    f"slice_{i+1}_pre_sparsity": slice_pre_sparsity,
-                    f"slice_{i+1}_pre_min": slice_pre_acts.min().item(),
-                    f"slice_{i+1}_pre_max": slice_pre_acts.max().item(),
-                    f"slice_{i+1}_pre_mean": slice_pre_acts.mean().item(),
-                    f"slice_{i+1}_top_non_zero": slice_top_non_zero,
-                    f"slice_{i+1}_top_total": slice_top_total,
-                    f"slice_{i+1}_top_sparsity": slice_top_sparsity,
-                    f"slice_{i+1}_top_min": slice_top_acts.min().item(),
-                    f"slice_{i+1}_top_max": slice_top_acts.max().item(),
-                    f"slice_{i+1}_top_mean": slice_top_acts.mean().item(),
-                    f"slice_{i+1}_top_indices_min": slice_top_indices.min().item(),
-                    f"slice_{i+1}_top_indices_max": slice_top_indices.max().item(),
-                    f"slice_{i+1}_raw_fvu": slice_fvu.item(),
-                    f"slice_{i+1}_raw_auxk": slice_auxk.item(),
-                    f"slice_{i+1}_raw_multi_topk": slice_multi.item(),
-                    f"slice_{i+1}_weight": slice_weight,
-                    f"slice_{i+1}_weighted_fvu": slice_fvu_weighted.item(),
-                    f"slice_{i+1}_weighted_auxk": slice_auxk_weighted.item(),
-                    f"slice_{i+1}_weighted_multi_topk": slice_multi_weighted.item(),
-                }
-                slice_metrics.append(slice_metric)
+                # Add weight information to metrics
+                slice_metrics[i].update(
+                    {
+                        f"slice_{i+1}_weight": slice_weight.item(),
+                        f"slice_{i+1}_weighted_fvu": slice_fvu_weighted.item(),
+                        f"slice_{i+1}_weighted_auxk": slice_auxk_weighted.item(),
+                        f"slice_{i+1}_weighted_multi_topk": slice_multi_weighted.item(),
+                    }
+                )
 
                 # Accumulate losses
                 total_fvu += slice_fvu_weighted
