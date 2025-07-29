@@ -630,7 +630,7 @@ class MatryoshkaMidDecoder(MidDecoder):
             }
             slice_metrics.append(slice_metric)
 
-        return fvu_losses.tolist(), auxk_losses, multi_losses, slice_metrics
+        return list(fvu_losses.unbind()), auxk_losses, multi_losses, slice_metrics
 
     @torch.autocast(
         "cuda",
