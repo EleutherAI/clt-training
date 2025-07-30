@@ -137,6 +137,7 @@ class Trainer:
                     n_targets=n_targets,
                     n_sources=n_sources,
                 )
+
                 self.saes[name] = SparseCoder(
                     input_widths[hook],
                     sae_cfg,
@@ -456,6 +457,9 @@ class Trainer:
             else float("inf")
         )
 
+        # For Matryoshka metrics logging
+        matryoshka_metrics = defaultdict(dict)
+
         if self.cfg.loss_fn == "ce":
             batch = next(iter(dl))
             x = self.input_ids_to_mesh(batch["input_ids"])
@@ -632,6 +636,13 @@ class Trainer:
             did_fire[name][latent_indices] = True
             self.maybe_all_reduce(did_fire[name], "max")
 
+            # Collect Matryoshka metrics if available (BEFORE restore)
+            if self.cfg.sae.matryoshka:
+                # The metrics should be available in the returned ForwardOutput
+                # since the __call__ method was just executed
+                if hasattr(out, "matryoshka_metrics"):
+                    matryoshka_metrics[name] = out.matryoshka_metrics
+
             if loss_fn in ("ce", "kl"):
                 # reshard outputs
                 if self.mesh is not None:
@@ -694,8 +705,6 @@ class Trainer:
                 loss.backward()
             del loss
 
-            runner.restore()
-
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
             bos_mask = x == self.model.config.bos_token_id
@@ -738,6 +747,7 @@ class Trainer:
                 )
 
             # Forward pass on the model to get the next batch of activations
+
             handles = [
                 mod.register_forward_hook(
                     partial(
@@ -864,6 +874,15 @@ class Trainer:
                         if self.cfg.sae.multi_topk:
                             info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
 
+                    # Add Matryoshka metrics to wandb logging
+                    if self.cfg.sae.matryoshka:
+                        for name, metrics in matryoshka_metrics.items():
+                            for metric_name, metric_value in metrics.items():
+                                # Skip non-scalar values like expansion_factors list
+                                if isinstance(metric_value, (int, float)):
+                                    metric_key = f"matryoshka/{name}/{metric_name}"
+                                    info[metric_key] = metric_value
+
                     if rank_zero:
                         info["k"] = self.get_current_k()
 
@@ -876,13 +895,16 @@ class Trainer:
                 avg_ce = 0.0
                 avg_kl = 0.0
                 avg_acc_top1 = 0.0
+                matryoshka_metrics.clear()
 
             self.global_step += 1
             pbar.update()
 
-        self.save()
-        if self.cfg.save_best:
-            self.save_best(avg_losses)
+            # Only save every save_every steps, not after every iteration
+            if self.global_step % self.cfg.save_every == 0:
+                self.save()
+                if self.cfg.save_best:
+                    self.save_best(avg_losses)
 
         pbar.close()
 

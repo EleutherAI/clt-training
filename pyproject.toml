@@ -22,7 +22,7 @@ dependencies = [
     "safetensors",
     "schedulefree",
     "simple-parsing",
-    "torch==2.7.1",
+    "torch>=2.7.0",
     "torchao>=0.11.0",
     "transformers",
     "triton>=2.1.0",

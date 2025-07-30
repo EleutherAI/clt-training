@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import replace
 
 import torch
@@ -31,6 +33,7 @@ class CrossLayerRunner(object):
         advance: bool = True,
         **kwargs,
     ):
+
         self.outputs[module_name] = mid_out
 
         candidate_indices = []
@@ -40,23 +43,29 @@ class CrossLayerRunner(object):
         output = 0
         to_delete = set()
         out, hookpoint = None, None
+
         for i, (hookpoint, layer_mid) in enumerate(self.outputs.items()):
+
             if detach_grad:
                 layer_mid.detach()
+
             if layer_mid.sparse_coder.cfg.divide_cross_layer:
                 divide_by = max(1, len(self.outputs) - 1)
             else:
                 divide_by = 1
+
             layer_mids.append(layer_mid)
             hookpoints.append(hookpoint)
             candidate_indices.append(
                 layer_mid.latent_indices + i * layer_mid.sparse_coder.num_latents
             )
             candidate_values.append(layer_mid.current_latent_acts)
+
             if detach_grad and advance:
                 self.to_restore[hookpoint] = (layer_mid, layer_mid.will_be_last)
             if layer_mid.will_be_last:
                 to_delete.add(hookpoint)
+
             if not mid_out.sparse_coder.cfg.do_coalesce_topk:
                 out = layer_mid(
                     y,
@@ -69,31 +78,17 @@ class CrossLayerRunner(object):
                 )
                 if hookpoint != module_name:
                     output += out.sae_out
+
             else:
                 layer_mid.next()
 
-        if mid_out.sparse_coder.cfg.secondary_target_tied:
-            candidate_indices = torch.cat(candidate_indices, dim=1)
-            candidate_values = torch.cat(candidate_values, dim=1)
-            candidate_indices = candidate_indices % mid_out.sparse_coder.num_latents
-            new_mid_out = mid_out.copy(
-                indices=candidate_indices,
-                activations=candidate_values,
-            )
-            out = new_mid_out(
-                y,
-                index=0,
-                add_post_enc=False,
-                no_extras=False,
-                denormalize=True,
-                addition=out.sae_out,
-                **kwargs,
-            )
-
         if mid_out.sparse_coder.cfg.do_coalesce_topk:
+
             candidate_indices = torch.cat(candidate_indices, dim=1)
             candidate_values = torch.cat(candidate_values, dim=1)
+
             if mid_out.sparse_coder.cfg.topk_coalesced:
+
                 if isinstance(candidate_values, DTensor):
 
                     def mapper(candidate_values, candidate_indices):
@@ -115,19 +110,26 @@ class CrossLayerRunner(object):
                         candidate_values, k=mid_out.sparse_coder.cfg.k, dim=1
                     )
                     best_indices = torch.gather(candidate_indices, 1, best_indices)
+
             else:
                 best_values = candidate_values
                 best_indices = candidate_indices
+
             if mid_out.sparse_coder.cfg.coalesce_topk == "concat":
+
                 best_indices = best_indices % mid_out.sparse_coder.num_latents
+
                 new_mid_out = mid_out.copy(
                     indices=best_indices,
                     activations=best_values,
                 )
+
                 out = new_mid_out(y, index=0, add_post_enc=False, **kwargs)
                 if advance:
                     del mid_out.x
+
             elif mid_out.sparse_coder.cfg.coalesce_topk == "per-layer":
+
                 output = 0
                 num_latents = mid_out.sparse_coder.num_latents
                 best_indices_local = best_indices
