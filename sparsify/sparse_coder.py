@@ -466,15 +466,43 @@ class MatryoshkaMidDecoder(MidDecoder):
         slice_masks = torch.stack(self._create_slice_masks())
 
         # Broadcast and apply all masks at once: (num_slices, batch_size, num_latents)
-        slice_pre_acts = self.pre_acts.unsqueeze(0) * slice_masks.unsqueeze(1).float()
+        slice_masks = slice_masks.unsqueeze(1).float()
+        if isinstance(self.pre_acts, dtensor.DTensor):
+            slice_masks = dtensor.DTensor.from_local(
+                slice_masks,
+                device_mesh=self.pre_acts.device_mesh,
+                placements=[dtensor.Shard(0), dtensor.Replicate()],
+            )
+        slice_pre_acts = self.pre_acts.unsqueeze(0) * slice_masks
 
         # Reshape for parallel top-k: (num_slices * batch_size, num_latents)
         slice_pre_acts_flat = slice_pre_acts.view(num_slices * batch_size, -1)
 
-        # Parallel top-k across all slices: (num_slices * batch_size, k)
-        slice_top_acts_flat, slice_top_indices_flat = torch.topk(
-            slice_pre_acts_flat, k, dim=1, sorted=False
-        )
+        if isinstance(slice_pre_acts_flat, dtensor.DTensor):
+            slice_pre_acts_flat = slice_pre_acts_flat.redistribute(
+                slice_pre_acts_flat.device_mesh,
+                [dtensor.Shard(0), dtensor.Replicate()],
+            )
+
+            slice_top_acts_flat, slice_top_indices_flat = torch.topk(
+                slice_pre_acts_flat.to_local(), k, dim=1, sorted=False
+            )
+            slice_top_acts_flat = dtensor.DTensor.from_local(
+                slice_top_acts_flat,
+                device_mesh=slice_pre_acts_flat.device_mesh,
+                placements=[dtensor.Shard(0), dtensor.Replicate()],
+            )
+            slice_top_indices_flat = dtensor.DTensor.from_local(
+                slice_top_indices_flat,
+                device_mesh=slice_pre_acts_flat.device_mesh,
+                placements=[dtensor.Shard(0), dtensor.Replicate()],
+            )
+
+        else:
+            # Parallel top-k across all slices: (num_slices * batch_size, k)
+            slice_top_acts_flat, slice_top_indices_flat = torch.topk(
+                slice_pre_acts_flat, k, dim=1, sorted=False
+            )
 
         # Reshape back: (num_slices, batch_size, k)
         slice_top_acts = slice_top_acts_flat.view(num_slices, batch_size, k)
@@ -485,6 +513,7 @@ class MatryoshkaMidDecoder(MidDecoder):
         all_slice_outputs = self.sparse_coder.decode(
             slice_top_acts_flat, slice_top_indices_flat, index
         )
+
         # Reshape back: (num_slices, batch_size, d_in)
         all_slice_outputs = all_slice_outputs.view(num_slices, batch_size, -1)
 
@@ -545,6 +574,8 @@ class MatryoshkaMidDecoder(MidDecoder):
         # Vectorized FVU computation: (num_slices,)
         l2_losses = residuals.pow(2).sum(dim=(1, 2))  # Sum over batch and features
         fvu_losses = l2_losses / total_variance
+        if isinstance(fvu_losses, dtensor.DTensor):
+            fvu_losses = fvu_losses.to_local()
 
         # Prepare return lists
         auxk_losses = []
@@ -553,7 +584,31 @@ class MatryoshkaMidDecoder(MidDecoder):
 
         # Some losses need per-slice computation (AuxK, Multi-TopK, metrics)
         for i in range(num_slices):
-            slice_size = int(slice_pre_acts[i].sum(dim=1).max().item())
+            if isinstance(slice_pre_acts, dtensor.DTensor):
+                slice_pre_acts_i = slice_pre_acts.to_local()[i]
+                slice_pre_acts_i = dtensor.DTensor.from_local(
+                    slice_pre_acts_i,
+                    device_mesh=slice_pre_acts.device_mesh,
+                    placements=[dtensor.Shard(0), dtensor.Shard(1)],
+                )
+                slice_top_acts_i = slice_top_acts.to_local()[i]
+                slice_top_acts_i = dtensor.DTensor.from_local(
+                    slice_top_acts_i,
+                    device_mesh=slice_top_acts.device_mesh,
+                    placements=[dtensor.Shard(0), dtensor.Replicate()],
+                )
+                slice_top_indices_i = slice_top_indices.to_local()[i]
+                slice_top_indices_i = dtensor.DTensor.from_local(
+                    slice_top_indices_i,
+                    device_mesh=slice_top_indices.device_mesh,
+                    placements=[dtensor.Shard(0), dtensor.Replicate()],
+                )
+            else:
+                slice_pre_acts_i = slice_pre_acts[i]
+                slice_top_acts_i = slice_top_acts[i]
+                slice_top_indices_i = slice_top_indices[i]
+
+            slice_size = int(slice_pre_acts_i.sum(dim=1).max().item())
             slice_percent = (slice_size / self.sparse_coder.num_latents) * 100
 
             # Compute AuxK loss for this slice
@@ -587,11 +642,6 @@ class MatryoshkaMidDecoder(MidDecoder):
             else:
                 multi_topk_fvu = y.new_tensor(0.0)
             multi_losses.append(multi_topk_fvu)
-
-            # Compute slice metrics
-            slice_pre_acts_i = slice_pre_acts[i]
-            slice_top_acts_i = slice_top_acts[i]
-            slice_top_indices_i = slice_top_indices[i]
 
             # Pre-activation statistics
             slice_pre_non_zero = (slice_pre_acts_i != 0).sum().item()
@@ -739,24 +789,6 @@ class MatryoshkaMidDecoder(MidDecoder):
                         "total_latents": self.sparse_coder.num_latents,
                         "dead_percent": 0.0,
                         "live_percent": 100.0,
-                    }
-                )
-
-            # Main encoding statistics
-            main_acts = self.latent_acts
-            if isinstance(main_acts, torch.Tensor):
-                main_non_zero = (main_acts != 0).sum().item()
-                main_total = main_acts.numel()
-                main_sparsity = ((main_total - main_non_zero) / main_total) * 100
-                matryoshka_metrics.update(
-                    {
-                        "main_non_zero": main_non_zero,
-                        "main_total": main_total,
-                        "main_sparsity": main_sparsity,
-                        "main_activation_min": main_acts.min().item(),
-                        "main_activation_max": main_acts.max().item(),
-                        "main_activation_mean": main_acts.mean().item(),
-                        "main_activation_std": main_acts.std().item(),
                     }
                 )
 
