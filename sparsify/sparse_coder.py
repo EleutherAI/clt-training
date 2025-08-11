@@ -32,12 +32,6 @@ class ForwardOutput:
     fvu: Tensor
     """Fraction of variance unexplained."""
 
-    auxk_loss: Tensor
-    """AuxK loss, if applicable."""
-
-    multi_topk_fvu: Tensor
-    """Multi-TopK FVU, if applicable."""
-
     is_last: bool = False
     """Whether this is the last target in a multi-target setup."""
 
@@ -49,14 +43,12 @@ class MidDecoder:
         x: Tensor,
         activations: Tensor,
         indices: Tensor,
-        pre_acts: Optional[Tensor] = None,
         dead_mask: Optional[Tensor] = None,
     ):
         self.sparse_coder = sparse_coder
         self.x = x
         self.latent_acts = activations
         self.latent_indices = indices
-        self.pre_acts = pre_acts
         self.dead_mask = dead_mask
         self.index = 0
 
@@ -65,7 +57,6 @@ class MidDecoder:
         x: Tensor | None = None,
         activations: Tensor | None = None,
         indices: Tensor | None = None,
-        pre_acts: Tensor | None = None,
         dead_mask: Tensor | None = None,
     ):
         if x is None:
@@ -74,13 +65,9 @@ class MidDecoder:
             activations = self.latent_acts
         if indices is None:
             indices = self.latent_indices
-        if pre_acts is None:
-            pre_acts = self.pre_acts
         if dead_mask is None:
             dead_mask = self.dead_mask
-        return MidDecoder(
-            self.sparse_coder, x, activations, indices, pre_acts, dead_mask
-        )
+        return MidDecoder(self.sparse_coder, x, activations, indices, dead_mask)
 
     def detach(self):
         if not hasattr(self, "original_activations"):
@@ -233,53 +220,11 @@ class MidDecoder:
             l2_loss = e.pow(2).sum()
             fvu = l2_loss / total_variance
 
-            # Second decoder pass for AuxK loss
-            if (
-                self.dead_mask is not None
-                and self.pre_acts is not None
-                and (num_dead := int(self.dead_mask.sum())) > 0
-            ):
-                # Heuristic from Appendix B.1 in the paper
-                k_aux = y.shape[-1] // 2
-
-                # Reduce the scale of the loss
-                # if there are a small number of dead latents
-                scale = min(num_dead / k_aux, 1.0)
-                k_aux = min(k_aux, num_dead)
-
-                # Don't include living latents in this loss
-                auxk_latents = torch.where(
-                    self.dead_mask[None], self.pre_acts, -torch.inf
-                )
-
-                # Top-k dead latents
-                auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
-
-                # Encourage the top ~50% of dead latents to
-                # predict the residual of the top k living latents
-                e_hat = self.sparse_coder.decode(auxk_acts, auxk_indices, index)
-                auxk_loss = (e_hat - e.detach()).pow(2).sum()
-                auxk_loss = scale * auxk_loss / total_variance
-            else:
-                auxk_loss = sae_out.new_tensor(0.0)
-
-            if self.sparse_coder.cfg.multi_topk and self.pre_acts is not None:
-                top_acts, top_indices = self.pre_acts.topk(
-                    4 * self.sparse_coder.cfg.k, sorted=False
-                )
-                sae_out = self.sparse_coder.decode(top_acts, top_indices, index)
-
-                multi_topk_fvu = (sae_out - y).pow(2).sum() / total_variance
-            else:
-                multi_topk_fvu = sae_out.new_tensor(0.0)
-
         return ForwardOutput(
             sae_out,
             self.latent_acts,
             self.latent_indices,
             fvu,
-            auxk_loss,
-            multi_topk_fvu,
             is_last,
         )
 
@@ -729,15 +674,11 @@ class SparseCoder(nn.Module):
             dtype=torch.bfloat16 if self.cfg.dtype != "float16" else torch.float16,
             enabled=torch.cuda.is_bf16_supported(),
         ):
-            top_acts, top_indices, pre_acts = self.encode(x)
-            if self.multi_target:
-                pre_acts = None
+            top_acts, top_indices = self.encode(x)
 
             x = self.normalize_input(x)
 
-            mid_decoder = MidDecoder(
-                self, x, top_acts, top_indices, dead_mask, pre_acts
-            )
+            mid_decoder = MidDecoder(self, x, top_acts, top_indices, dead_mask)
             if self.multi_target or return_mid_decoder:
                 return mid_decoder
             else:

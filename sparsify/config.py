@@ -40,9 +40,6 @@ class SparseCoderConfig(Serializable):
     k: int = 32
     """Number of nonzero features."""
 
-    multi_topk: bool = False
-    """Use Multi-TopK loss."""
-
     skip_connection: bool = False
     """Include a linear skip connection."""
 
@@ -156,9 +153,6 @@ class TrainConfig(Serializable):
 
     k_anneal_mul: int = 10
     """How much to increase k by for k-annealing."""
-
-    auxk_alpha: float = 0.0
-    """Weight of the auxiliary loss term."""
 
     dead_feature_threshold: int = 10_000_000
     """Number of tokens after which a feature is considered dead."""
