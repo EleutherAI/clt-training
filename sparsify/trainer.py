@@ -444,9 +444,7 @@ class Trainer:
         num_tokens_in_step = 0
 
         # For logging purposes
-        avg_auxk_loss = defaultdict(float)
         avg_fvu = defaultdict(float)
-        avg_multi_topk_fvu = defaultdict(float)
         fvu_losses = defaultdict(float)
         avg_ce = 0.0
         avg_kl = 0.0
@@ -604,11 +602,8 @@ class Trainer:
             encoding = runner.encode(
                 inputs,
                 sparse_coder=raw,
-                dead_mask=(
-                    self.num_tokens_since_fired[name] > self.cfg.dead_feature_threshold
-                    if self.cfg.auxk_alpha > 0
-                    else None
-                ),
+                dead_mask=self.num_tokens_since_fired[name]
+                > self.cfg.dead_feature_threshold,
             )
             out = runner.decode(
                 encoding,
@@ -662,16 +657,9 @@ class Trainer:
                 return (output, *aux_out) if aux_out is not None else output
             else:
                 avg_fvu[name] += float(out.fvu.detach() / denom)
-                if self.cfg.auxk_alpha > 0:
-                    avg_auxk_loss[name] += float(out.auxk_loss.detach() / denom)
 
                 prev_modules = [mod for mod in runner.outputs.keys() if mod != name]
                 prev_modules = [self.saes[mod] for mod in prev_modules]
-
-                if self.cfg.sae.multi_topk:
-                    avg_multi_topk_fvu[name] += float(
-                        out.multi_topk_fvu.detach() / denom
-                    )
 
                 dead_latent_loss = 0.0
                 if self.cfg.dead_latent_penalty > 0.0:
@@ -695,10 +683,7 @@ class Trainer:
                     dead_latent_loss = dead_latent_loss + active_correction
 
                 loss = (
-                    out.fvu
-                    + self.cfg.auxk_alpha * out.auxk_loss
-                    + out.multi_topk_fvu / 8
-                    + self.cfg.dead_latent_penalty * dead_latent_loss
+                    out.fvu + self.cfg.dead_latent_penalty * dead_latent_loss
                 ) / acc_steps
 
                 # Do a "local" backward pass if we're not training end-to-end
@@ -869,29 +854,13 @@ class Trainer:
                         if "fvu" in self.cfg.loss_fn:
                             info[f"fvu/{name}"] = avg_fvu[name]
 
-                        if self.cfg.auxk_alpha > 0:
-                            info[f"auxk/{name}"] = avg_auxk_loss[name]
-                        if self.cfg.sae.multi_topk:
-                            info[f"multi_topk_fvu/{name}"] = avg_multi_topk_fvu[name]
-
-                    # Add Matryoshka metrics to wandb logging
-                    if self.cfg.sae.matryoshka:
-                        for name, metrics in matryoshka_metrics.items():
-                            for metric_name, metric_value in metrics.items():
-                                # Skip non-scalar values like expansion_factors list
-                                if isinstance(metric_value, (int, float)):
-                                    metric_key = f"matryoshka/{name}/{metric_name}"
-                                    info[metric_key] = metric_value
-
                     if rank_zero:
                         info["k"] = self.get_current_k()
 
                         if wandb is not None:
                             wandb.log(info, step=step)
 
-                avg_auxk_loss.clear()
                 avg_fvu.clear()
-                avg_multi_topk_fvu.clear()
                 avg_ce = 0.0
                 avg_kl = 0.0
                 avg_acc_top1 = 0.0

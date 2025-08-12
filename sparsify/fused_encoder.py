@@ -67,9 +67,6 @@ class EncoderOutput(NamedTuple):
     top_indices: torch.Tensor
     """Indices of the top-k features."""
 
-    pre_acts: torch.Tensor
-    """Activations before the top-k selection."""
-
 
 class FusedEncoder(torch.autograd.Function):
     @torch.compile(disable=NO_COMPILE)
@@ -79,134 +76,21 @@ class FusedEncoder(torch.autograd.Function):
         input,
         weight,
         bias,
-        k: int,
-        activation: Literal["groupmax", "topk", "batchtopk"],
-        use_fp8: bool = False,
+        values,
+        indices,
+        activation: Literal["groupmax"] | str | None = None,
     ):
-        """
-        input:  (N, D)
-        weight: (M, D)
-        bias:   (M,)
-        k:      int (number of top elements to select along dim=1)
-        """
-        preacts = linear(input, weight, bias, use_fp8)
-        preacts.relu_()
-
-        original_indices = None
-        if activation == "batchtopk":
-            preacts, original_indices = batch_topk(preacts, k)
-            k *= 4
-            activation = "topk"
-
-        # Get top-k values and indices for each row
-        if activation == "topk":
-            if (
-                isinstance(preacts, dtensor.DTensor)
-                and preacts.device_mesh.shape[1] == 1
-            ):
-                mesh = preacts.device_mesh
-                local_acts = preacts.to_local()
-                local_values, local_indices = rtopk_topk(local_acts, k=k)
-                values = dtensor.DTensor.from_local(
-                    local_values,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Replicate()),
-                )
-                indices = dtensor.DTensor.from_local(
-                    local_indices,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Replicate()),
-                )
-            elif isinstance(preacts, dtensor.DTensor):
-                mesh = preacts.device_mesh
-                local_acts = preacts.to_local()
-                if original_indices is not None:
-                    local_indices = original_indices
-                    local_values = torch.gather(local_acts, 1, original_indices)
-                else:
-                    local_values, local_indices = rtopk_topk(local_acts, k=k)
-                local_indices += mesh.get_local_rank(1) * local_acts.shape[1]
-                values = dtensor.DTensor.from_local(
-                    local_values,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Shard(1)),
-                ).redistribute(mesh, (dtensor.Shard(0), dtensor.Replicate()))
-                indices = dtensor.DTensor.from_local(
-                    local_indices,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Shard(1)),
-                ).redistribute(mesh, (dtensor.Shard(0), dtensor.Replicate()))
-                local_values, local_indices = values.to_local(), indices.to_local()
-                local_values, local_indices_ = rtopk_topk(local_values, k=k)
-                local_indices = torch.gather(local_indices, 1, local_indices_.long())
-                values = dtensor.DTensor.from_local(
-                    local_values,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Replicate()),
-                )
-                indices = dtensor.DTensor.from_local(
-                    local_indices,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Replicate()),
-                )
-            else:
-                values, indices = rtopk_topk(preacts, k=k)
-        elif activation == "groupmax":
-            if isinstance(preacts, dtensor.DTensor):
-                mesh = preacts.device_mesh
-                local_acts = preacts.to_local()
-                assert k % mesh.shape[1] == 0
-                local_k = k // mesh.shape[1]
-                local_values, local_indices = local_acts.unflatten(
-                    -1, (local_k, -1)
-                ).max(dim=-1)
-                offsets = torch.arange(
-                    0,
-                    local_acts.shape[1],
-                    local_acts.shape[1] // local_k,
-                    device=preacts.device,
-                )
-                mesh_offset = mesh.get_local_rank(1) * local_k
-                indices = mesh_offset + offsets + local_indices
-                values = local_values
-                values = dtensor.DTensor.from_local(
-                    values,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Shard(1)),
-                )
-                indices = dtensor.DTensor.from_local(
-                    indices,
-                    mesh,
-                    (dtensor.Shard(0), dtensor.Shard(1)),
-                )
-                # values = values.redistribute(
-                #     mesh, (dtensor.Shard(0), dtensor.Replicate())
-                # )
-                # indices = indices.redistribute(
-                #     mesh, (dtensor.Shard(0), dtensor.Replicate())
-                # )
-            else:
-                num_latents = preacts.shape[1]
-                values, indices = preacts.unflatten(-1, (k, -1)).max(dim=-1)
-                offsets = torch.arange(
-                    0, num_latents, num_latents // k, device=preacts.device
-                )
-                indices = offsets + indices
-        else:
-            raise ValueError(f"Unknown activation: {activation}")
-
         # Save tensors needed for the backward pass
-        ctx.save_for_backward(input, weight, bias, indices, values)
-        ctx.k = k
+        ctx.save_for_backward(input, weight, bias, values, indices)
+        ctx.k = values.shape[-1]
         ctx.activation = activation
-        # return values, indices, preacts
-        return values, indices, None
+        return values
 
     # @torch.compile
     @staticmethod
     @torch.no_grad()
-    def backward(ctx, grad_values, grad_indices, grad_preacts):
-        input, weight, bias, indices, values = ctx.saved_tensors
+    def backward(ctx, grad_values):
+        input, weight, bias, values, indices = ctx.saved_tensors
         grad_input = grad_weight = grad_bias = None
         activation = ctx.activation
 
@@ -413,13 +297,141 @@ def fused_encoder(
     k: int,
     activation: Literal["groupmax", "topk"],
     use_fp8: bool = False,
+    matryoshka_widths: list[int] | None = None,
 ) -> EncoderOutput:
     """
     Convenience wrapper that performs an nn.Linear followed by `activation` with
     a backward pass optimized using index_add.
+
+    input:  (N, D)
+    weight: (M, D)
+    bias:   (M,)
+    k:      int (number of top elements to select along dim=1)
     """
+    with torch.no_grad():
+        preacts = linear(input, weight, bias, use_fp8)
+        preacts.relu_()
+
+        all_values, all_indices = [], []
+        for preacts in [
+            preacts[:, :width] for width in (matryoshka_widths or [preacts.shape[-1]])
+        ]:
+            original_indices = None
+            if activation == "batchtopk":
+                preacts, original_indices = batch_topk(preacts, k)
+                k *= 4
+                activation = "topk"
+
+            # Get top-k values and indices for each row
+            if activation == "topk":
+                if (
+                    isinstance(preacts, dtensor.DTensor)
+                    and preacts.device_mesh.shape[1] == 1
+                ):
+                    mesh = preacts.device_mesh
+                    local_acts = preacts.to_local()
+                    local_values, local_indices = rtopk_topk(local_acts, k=k)
+                    values = dtensor.DTensor.from_local(
+                        local_values,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Replicate()),
+                    )
+                    indices = dtensor.DTensor.from_local(
+                        local_indices,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Replicate()),
+                    )
+                elif isinstance(preacts, dtensor.DTensor):
+                    mesh = preacts.device_mesh
+                    local_acts = preacts.to_local()
+                    if original_indices is not None:
+                        local_indices = original_indices
+                        local_values = torch.gather(local_acts, 1, original_indices)
+                    else:
+                        local_values, local_indices = rtopk_topk(local_acts, k=k)
+                    local_indices += mesh.get_local_rank(1) * local_acts.shape[1]
+                    values = dtensor.DTensor.from_local(
+                        local_values,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Shard(1)),
+                    ).redistribute(mesh, (dtensor.Shard(0), dtensor.Replicate()))
+                    indices = dtensor.DTensor.from_local(
+                        local_indices,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Shard(1)),
+                    ).redistribute(mesh, (dtensor.Shard(0), dtensor.Replicate()))
+                    local_values, local_indices = values.to_local(), indices.to_local()
+                    local_values, local_indices_ = rtopk_topk(local_values, k=k)
+                    local_indices = torch.gather(
+                        local_indices, 1, local_indices_.long()
+                    )
+                    values = dtensor.DTensor.from_local(
+                        local_values,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Replicate()),
+                    )
+                    indices = dtensor.DTensor.from_local(
+                        local_indices,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Replicate()),
+                    )
+                else:
+                    values, indices = rtopk_topk(preacts, k=k)
+            elif activation == "groupmax":
+                if isinstance(preacts, dtensor.DTensor):
+                    mesh = preacts.device_mesh
+                    local_acts = preacts.to_local()
+                    assert k % mesh.shape[1] == 0
+                    local_k = k // mesh.shape[1]
+                    local_values, local_indices = local_acts.unflatten(
+                        -1, (local_k, -1)
+                    ).max(dim=-1)
+                    offsets = torch.arange(
+                        0,
+                        local_acts.shape[1],
+                        local_acts.shape[1] // local_k,
+                        device=preacts.device,
+                    )
+                    mesh_offset = mesh.get_local_rank(1) * local_k
+                    indices = mesh_offset + offsets + local_indices
+                    values = local_values
+                    values = dtensor.DTensor.from_local(
+                        values,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Shard(1)),
+                    )
+                    indices = dtensor.DTensor.from_local(
+                        indices,
+                        mesh,
+                        (dtensor.Shard(0), dtensor.Shard(1)),
+                    )
+                    # values = values.redistribute(
+                    #     mesh, (dtensor.Shard(0), dtensor.Replicate())
+                    # )
+                    # indices = indices.redistribute(
+                    #     mesh, (dtensor.Shard(0), dtensor.Replicate())
+                    # )
+                else:
+                    num_latents = preacts.shape[1]
+                    values, indices = preacts.unflatten(-1, (k, -1)).max(dim=-1)
+                    offsets = torch.arange(
+                        0, num_latents, num_latents // k, device=preacts.device
+                    )
+                    indices = offsets + indices
+            else:
+                raise ValueError(f"Unknown activation: {activation}")
+
+        all_values.append(values)
+        all_indices.append(indices)
+
+    values = torch.cat(all_values, dim=-1)
+    indices = torch.cat(all_indices, dim=-1)
+
+    values = FusedEncoder.apply(input, weight, bias, values, indices, activation)
+
     return EncoderOutput(
-        *FusedEncoder.apply(input, weight, bias, k, activation, use_fp8)  # type: ignore
+        top_acts=values,
+        top_indices=indices,
     )
 
 
