@@ -1,0 +1,118 @@
+#!/bin/bash
+set -e
+PORT=$RANDOM
+PORT=$((PORT + 1000))
+
+CFG=$1
+K=$2
+EF=$3
+if [ -z "$BS" ]; then
+    BS=$4
+    # BS=$1
+    # shift
+fi
+LR=$5
+
+if [ -z "$BS" ]; then
+    BS=4
+else
+    BS=$BS
+fi
+if [ -z "$LR" ]; then
+    LR=2e-4
+else
+    LR=$LR
+fi
+
+NAME=bs${BS}-lr$LR
+# No skip connection since transcode=False
+SKIP=""
+SCALING="--post_encoder_scale=True"
+if [ -z "$CFG" ]; then
+    CROSSING=""
+else
+    if [ "$CFG" == "none" ]; then
+        CROSSING=""
+    elif [ "$CFG" == "no-affine" ]; then
+        CROSSING="--train_post_encoder=False" SCALING=""
+    elif [ "$CFG" == "btopk" ]; then
+        CROSSING="--activation=batchtopk"
+    elif [ "$CFG" == "btopk-no-affine" ]; then
+        CROSSING="--activation=batchtopk --train_post_encoder=False" SCALING=""
+    elif [ "$CFG" == "cross" ]; then
+        CROSSING="--cross_layer=16 --divide_cross_layer=True"
+    else
+        echo "Invalid option: $CFG"
+        echo "Valid options: none, no-affine, btopk, btopk-no-affine, cross"
+        exit 1
+    fi
+    NAME=${NAME}-$CFG
+fi
+if [ -z "$EF" ]; then
+    EF=32
+else
+    EF=$EF
+fi
+NAME=${NAME}-ef$EF
+if [ -z "$K" ]; then
+    K=16
+else
+    K=$K
+fi
+NAME=${NAME}-k$K
+
+if [ -z "$OPTIMIZER" ]; then
+    OPTIMIZER="adam"
+else
+    NAME=${NAME}-${OPTIMIZER}
+fi
+
+if [ -z "$B1" ]; then
+    B1=0.9
+else
+    NAME=${NAME}-b1$B1
+fi
+
+SAVE_ARGS="--save_every 1000"
+if ! [ -z "$DO_SAVE" ]; then
+    if [ "$DO_SAVE" == "1" ]; then
+        SAVE_ARGS="--save_every 2000"
+    else
+        SAVE_ARGS="--save_every $DO_SAVE"
+    fi
+fi
+
+if ! [ -z "$RESUME" ]; then
+    RESUME="--resume"
+fi
+
+if ! [ -z "$FINETUNE" ]; then
+    FINETUNE="--finetune checkpoints/llama-matryoshka-sweep/$NAME$name"
+fi
+
+if ! [ -z "$BF16" ]; then
+    extra="$extra --dtype bfloat16"
+    NAME=$NAME-bf16
+fi
+
+
+N_DEVICE_CHARS=${#CUDA_VISIBLE_DEVICES}
+N_DEVICES=$(( ($N_DEVICE_CHARS + 1) / 2 ))
+echo "Using $N_DEVICES devices"
+OPTIMIZER=adam8 \
+WANDB_ENTITY=eleutherai uv run torchrun --master_port $PORT --nproc_per_node $N_DEVICES -m sparsify \
+meta-llama/Llama-3.2-1B \
+--ctx_len 128 --filter_bos=True --remove_first_token=True \
+--max_examples 780000 \
+--transcode=False $SKIP \
+--batch_size=$BS --expansion_factor=$EF --k=$K --tp=$N_DEVICES \
+--matryoshka=True --matryoshka_expansion_factors 4 8 16 32 \
+--hookpoints layers.0.mlp layers.1.mlp layers.2.mlp layers.3.mlp layers.4.mlp layers.5.mlp layers.6.mlp layers.7.mlp layers.8.mlp layers.9.mlp layers.10.mlp layers.11.mlp layers.12.mlp layers.13.mlp layers.14.mlp layers.15.mlp \
+--run_name matryoshka-sae/$NAME$name \
+$CROSSING \
+--b1 $B1 \
+$SCALING --normalize_io=True \
+$SAVE_ARGS --lr $LR \
+--optimizer $OPTIMIZER --lr_warmup_steps 50 $extra \
+$RESUME $FINETUNE
+# --finetune /mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/bs8-lr2e-4-none-ef128-k16/

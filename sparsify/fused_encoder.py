@@ -26,6 +26,7 @@ MAX_SIZE = 1024
 
 @torch.compile
 def rtopk_topk(data, k: int, max_iter=10, k_div: int = 1):
+    assert data.ndim == 2, f"Data must be 2D, got {data.shape}"
     if rtopk is None or NO_RTOPK:
         return torch.topk(data, k, dim=1, sorted=False)
     else:
@@ -295,7 +296,7 @@ def fused_encoder(
     weight,
     bias,
     k: int,
-    activation: Literal["groupmax", "topk"],
+    activation: Literal["groupmax", "topk", "batchtopk"],
     use_fp8: bool = False,
     matryoshka_widths: list[int] | None = None,
 ) -> EncoderOutput:
@@ -313,9 +314,29 @@ def fused_encoder(
         preacts.relu_()
 
         all_values, all_indices = [], []
-        for preacts in [
-            preacts[:, :width] for width in (matryoshka_widths or [preacts.shape[-1]])
-        ]:
+        all_preacts = []
+        if matryoshka_widths is None:
+            all_preacts = [preacts]
+        else:
+            if not isinstance(weight, dtensor.DTensor) or weight.placements[
+                1
+            ] != dtensor.Shard(0):
+                all_preacts = [preacts[:, :width] for width in matryoshka_widths]
+            else:
+                mesh = weight.device_mesh
+                preacts = preacts.unflatten(-1, (mesh.shape[1], -1))
+                local_preacts = preacts.to_local()
+                all_local_preacts = [
+                    local_preacts[:, :, : width // mesh.shape[1]].flatten(-2, -1)
+                    for width in matryoshka_widths
+                ]
+                all_preacts = [
+                    dtensor.DTensor.from_local(
+                        x, mesh, (dtensor.Shard(0), dtensor.Shard(1))
+                    )
+                    for x in all_local_preacts
+                ]
+        for preacts in all_preacts:
             original_indices = None
             if activation == "batchtopk":
                 preacts, original_indices = batch_topk(preacts, k)
@@ -421,8 +442,8 @@ def fused_encoder(
             else:
                 raise ValueError(f"Unknown activation: {activation}")
 
-        all_values.append(values)
-        all_indices.append(indices)
+            all_values.append(values)
+            all_indices.append(indices)
 
     values = torch.cat(all_values, dim=-1)
     indices = torch.cat(all_indices, dim=-1)

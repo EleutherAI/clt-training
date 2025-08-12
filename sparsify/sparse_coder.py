@@ -15,7 +15,7 @@ from torch.distributed import tensor as dtensor
 from torch.distributed.tensor.device_mesh import DeviceMesh
 
 from .config import SparseCoderConfig
-from .fused_encoder import EncoderOutput, fused_encoder
+from .fused_encoder import NO_COMPILE, EncoderOutput, fused_encoder
 from .utils import decoder_impl, load_sharded, save_sharded
 
 
@@ -376,10 +376,14 @@ class MatryoshkaMidDecoder(MidDecoder):
         """
         num_slices = len(self.expansion_factors)
         batch_size = self.latent_acts.shape[0]
-        k = self.latent_acts.shape[-1]
+        k = self.latent_acts.shape[-1] // num_slices
 
         slice_top_acts = self.latent_acts.unflatten(-1, (-1, k))
         slice_top_indices = self.latent_indices.unflatten(-1, (-1, k))
+        assert slice_top_acts.shape[1] == num_slices, (
+            "Wrong number of slices from Matryoshka encoder: "
+            f"{slice_top_acts.shape[1]} != {num_slices}"
+        )
 
         slice_top_acts_flat = slice_top_acts.flatten(0, 1)
         slice_top_indices_flat = slice_top_indices.flatten(0, 1)
@@ -1058,7 +1062,7 @@ class SparseCoder(nn.Module):
             return x * (self.out_norm / (x.shape[-1] ** 0.5))
         return x
 
-    # @torch.compile(disable=NO_COMPILE)
+    @torch.compile(disable=NO_COMPILE)
     def encode(self, x: Tensor) -> EncoderOutput:
         """Encode the input and select the top-k latents."""
         x = self.normalize_input(x)
