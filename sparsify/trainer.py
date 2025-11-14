@@ -77,10 +77,20 @@ class Trainer:
             raw_hookpoints = []
             for name, _ in model.base_model.named_modules():
                 if any(fnmatchcase(name, pat) for pat in cfg.hookpoints):
+                    if "attention" in name:
+                        continue
                     raw_hookpoints.append(name)
 
             # Natural sort to impose a consistent order
             cfg.hookpoints = natsorted(raw_hookpoints)
+            if cfg.hookpoints_in:
+                raw_hookpoints_in = []
+                for name, _ in model.base_model.named_modules():
+                    if any(fnmatchcase(name, pat) for pat in cfg.hookpoints_in):
+                        if "attention" in name:
+                            continue
+                        raw_hookpoints_in.append(name)
+                cfg.hookpoints_in = natsorted(raw_hookpoints_in)
         else:
             # If no layers are specified, train on all of them
             if not cfg.layers:
@@ -92,7 +102,7 @@ class Trainer:
             cfg.hookpoints = [f"{layers_name}.{i}" for i in cfg.layers]
 
         cfg.hookpoints = cfg.hookpoints[:: cfg.layer_stride]
-
+        print(f"Hookpoints: {cfg.hookpoints}")
         self.cfg = cfg
         self.dataset = dataset
 
@@ -101,8 +111,9 @@ class Trainer:
             input_widths = resolve_widths(
                 model, cfg.hookpoints, mesh=self.mesh if DISTRIBUTE_MODEL else None
             )
+       
         unique_widths = set(input_widths.values())
-
+        print(f"Unique widths: {unique_widths}")
         if cfg.distribute_modules and len(unique_widths) > 1:
             # dist.all_to_all requires tensors to have the same shape across ranks
             raise ValueError(
@@ -174,6 +185,11 @@ class Trainer:
                 ]
                 # For logging purposes
                 lrs = [f"{lr:.2e}" for lr in sorted(set(float(pg["lr"]) for pg in pgs))]
+                # multiply the lr of the first layers by 10 and linearly decrease this multiplier for the rest of the layers
+                
+               # for i in range(0, len(pgs)):
+                #    pgs[i]["lr"] = pgs[i]["lr"] * (10-i/ len(pgs)) 
+                print(f"Pgs: {pgs}")
 
                 adam = Adam(
                     pgs,
@@ -230,7 +246,7 @@ class Trainer:
                     for sae in self.saes.values()
                 ]
                 lrs = [f"{lr:.2e}" for lr in sorted(set(pg["lr"] for pg in pgs))]
-
+              
                 if self.mesh is not None:
                     ScheduleFreeWrapperType = ScheduleFreeWrapperReference
                 else:
@@ -522,7 +538,6 @@ class Trainer:
             # Flatten the batch and sequence dimensions
             outputs = outputs.flatten(0, 1)
             inputs = inputs.flatten(0, 1) if self.cfg.sae.transcode else outputs
-
             if self.mesh is not None:
                 if not DISTRIBUTE_MODEL:
                     inputs = DTensor.from_local(inputs, self.mesh, [Shard(0), Shard(0)])
@@ -683,9 +698,13 @@ class Trainer:
 
         for batch in dl:
             x = self.input_ids_to_mesh(batch["input_ids"])
-            bos_mask = x == self.model.config.bos_token_id
+            if self.model.config.bos_token_id is not None:
+                bos_mask = x == self.model.config.bos_token_id
+            else:
+                bos_mask = torch.zeros_like(x, dtype=torch.bool)
+           
             if not self.cfg.filter_bos:
-                bos_mask &= 0
+                bos_mask &= False
             if self.cfg.remove_first_token:
                 bos_mask[:, 0] = True
 
@@ -846,9 +865,10 @@ class Trainer:
 
                     if rank_zero:
                         info["k"] = self.get_current_k()
-
+                         
                         if wandb is not None:
                             wandb.log(info, step=step)
+                        
 
                 avg_fvu.clear()
                 avg_ce = 0.0

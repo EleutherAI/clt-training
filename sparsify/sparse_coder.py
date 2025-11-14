@@ -199,8 +199,6 @@ class MidDecoder:
                 self.latent_acts,
                 self.latent_indices,
                 sae_out.new_tensor(0.0),
-                sae_out.new_tensor(0.0),
-                sae_out.new_tensor(0.0),
                 is_last,
             )
         else:

@@ -141,7 +141,7 @@ class TrainConfig(Serializable):
     b1: float = 0.9
     """Beta1 for Adam."""
 
-    b2: float = 0.999
+    b2: float = 0.95
     """Beta2 for Adam."""
 
     force_lr_warmup: bool = False

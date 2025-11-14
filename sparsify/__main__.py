@@ -87,7 +87,13 @@ def load_artifacts(
         dtype = "auto"
 
     # End-to-end training requires a model with a causal LM head
+    
     model_cls = AutoModel if args.loss_fn == "fvu" else AutoModelForCausalLM
+    if "InstaDeepAI" in args.model :
+        from transformers import AutoModelForMaskedLM
+        model_cls = AutoModelForMaskedLM
+        #dtype = torch.float32
+    
     model = model_cls.from_pretrained(
         args.model,
         device_map={"": f"cuda:{rank}"},
@@ -99,6 +105,7 @@ def load_artifacts(
         revision=args.revision,
         torch_dtype=dtype,
         token=args.hf_token,
+        trust_remote_code=True,
     )
     if torch.distributed.is_initialized() and DISTRIBUTE_MODEL:
         # TODO: sdpa doesn't shard correctly
